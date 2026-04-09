@@ -6,8 +6,8 @@ import type { PullRequestContext } from "../src/review/types.js";
 
 function createPullRequestContext(): PullRequestContext {
   return {
-    action: "opened",
-    installationId: 7,
+    action: "review_requested",
+    installationId: 0,
     owner: "acme",
     repo: "repo",
     pullNumber: 42,
@@ -28,11 +28,6 @@ function createPlatformWithPublishedItems(input: {
   const listComments = vi.fn();
   const createComment = vi.fn();
   const getContent = vi.fn();
-  const request = vi.fn().mockResolvedValue({
-    data: {
-      slug: "review-bot",
-    },
-  });
   const paginate = vi.fn((route: unknown) => {
     if (route === listReviews) {
       return Promise.resolve(input.reviews);
@@ -47,15 +42,11 @@ function createPlatformWithPublishedItems(input: {
 
   const platform = createGitHubReviewPlatform(
     {
-      githubAppId: "123",
-      githubPrivateKey: "private-key",
+      githubToken: "ghp_test_token",
+      githubBotLogin: "review-bot",
     },
     {
-      createAppOctokit: () =>
-        ({
-          request,
-        }) as never,
-      createInstallationOctokit: () =>
+      createOctokit: () =>
         ({
           paginate,
           rest: {
@@ -76,11 +67,11 @@ function createPlatformWithPublishedItems(input: {
     },
   );
 
-  return { platform, request };
+  return { platform };
 }
 
 describe("createGitHubReviewPlatform", () => {
-  it("ignores marker comments that were not authored by the app bot", async () => {
+  it("ignores marker comments that were not authored by the configured bot login", async () => {
     const marker = buildReviewMarker("abc123");
     const { platform } = createPlatformWithPublishedItems({
       comments: [
@@ -99,14 +90,14 @@ describe("createGitHubReviewPlatform", () => {
     expect(result).toBe(false);
   });
 
-  it("accepts marker comments authored by the app bot", async () => {
+  it("accepts marker comments authored by the configured bot login", async () => {
     const marker = buildReviewMarker("abc123");
-    const { platform, request } = createPlatformWithPublishedItems({
+    const { platform } = createPlatformWithPublishedItems({
       comments: [
         {
           body: marker,
           user: {
-            login: "review-bot[bot]",
+            login: "review-bot",
           },
         },
       ],
@@ -116,6 +107,5 @@ describe("createGitHubReviewPlatform", () => {
     const result = await platform.hasPublishedResult(createPullRequestContext(), marker);
 
     expect(result).toBe(true);
-    expect(request).toHaveBeenCalledTimes(1);
   });
 });

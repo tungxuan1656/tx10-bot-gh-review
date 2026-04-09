@@ -2,7 +2,7 @@
   "name": "tx10-bot-gh-review",
   "private": true,
   "version": "1.0.0",
-  "description": "GitHub App review bot powered by Codex CLI",
+  "description": "Machine-user GitHub review bot powered by Codex CLI",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -21,7 +21,6 @@
   "license": "ISC",
   "packageManager": "pnpm@10.28.1",
   "dependencies": {
-    "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
     "@octokit/webhooks": "^14.2.0",
     "express": "^5.2.1",

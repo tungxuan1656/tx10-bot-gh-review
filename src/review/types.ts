@@ -1,11 +1,6 @@
 import { z } from "zod";
 
-export const supportedPullRequestActions = [
-  "opened",
-  "reopened",
-  "synchronize",
-  "review_requested",
-] as const;
+export const supportedPullRequestActions = ["review_requested"] as const;
 
 export type SupportedPullRequestAction = (typeof supportedPullRequestActions)[number];
 
@@ -82,9 +77,6 @@ export type ReviewEvent = "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
 
 export type PullRequestWebhookPayload = {
   action: SupportedPullRequestAction;
-  installation: {
-    id: number;
-  };
   repository: {
     name: string;
     owner: {
@@ -102,6 +94,9 @@ export type PullRequestWebhookPayload = {
       sha: string;
     };
   };
+  requested_reviewer?: {
+    login: string;
+  } | null | undefined;
 };
 
 export type InlineReviewComment = {

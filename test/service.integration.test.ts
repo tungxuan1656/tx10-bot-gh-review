@@ -16,10 +16,7 @@ function createLoggerStub(): AppLogger {
 
 function createPullRequestPayload() {
   return {
-    action: "opened",
-    installation: {
-      id: 1,
-    },
+    action: "review_requested",
     repository: {
       name: "repo",
       owner: {
@@ -36,6 +33,9 @@ function createPullRequestPayload() {
       base: {
         sha: "def456",
       },
+    },
+    requested_reviewer: {
+      login: "review-bot",
     },
   };
 }
@@ -81,7 +81,7 @@ describe("ReviewService", () => {
       }),
     };
 
-    const service = new ReviewService(github, codex, createLoggerStub());
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
     await service.handlePullRequestWebhook(createPullRequestPayload());
 
     expect(publishReview).toHaveBeenCalledTimes(1);
@@ -115,7 +115,7 @@ describe("ReviewService", () => {
       }),
     };
 
-    const service = new ReviewService(github, codex, createLoggerStub());
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
     await service.handlePullRequestWebhook(createPullRequestPayload());
 
     expect(publishReview).not.toHaveBeenCalled();
@@ -141,7 +141,7 @@ describe("ReviewService", () => {
       review,
     };
 
-    const service = new ReviewService(github, codex, createLoggerStub());
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
     await service.handlePullRequestWebhook(createPullRequestPayload());
 
     expect(listPullRequestFiles).not.toHaveBeenCalled();
@@ -187,7 +187,7 @@ describe("ReviewService", () => {
     };
     const codex: CodexRunner = { review };
 
-    const service = new ReviewService(github, codex, createLoggerStub());
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
     await service.handlePullRequestWebhook(createPullRequestPayload());
 
     expect(review).toHaveBeenCalledTimes(1);
@@ -248,7 +248,7 @@ describe("ReviewService", () => {
       }),
     };
 
-    const service = new ReviewService(github, codex, createLoggerStub());
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
     await service.handlePullRequestWebhook(createPullRequestPayload());
 
     const firstPublishInput = publishReview.mock.calls[0]?.[0] as {
@@ -265,6 +265,103 @@ describe("ReviewService", () => {
     expect(secondPublishInput.comments).toEqual([]);
     expect(secondPublishInput.body).toContain("### Additional findings");
     expect(secondPublishInput.body).toContain("Console statement committed");
+    expect(publishFailureComment).not.toHaveBeenCalled();
+  });
+
+  it("ignores review requests for a different reviewer", async () => {
+    const hasPublishedResult = vi.fn().mockResolvedValue(false);
+    const listPullRequestFiles = vi.fn();
+    const getFileContent = vi.fn();
+    const publishReview = vi.fn();
+    const publishFailureComment = vi.fn();
+    const review = vi.fn();
+    const github: ReviewPlatform = {
+      hasPublishedResult,
+      listPullRequestFiles,
+      getFileContent,
+      publishReview,
+      publishFailureComment,
+    };
+    const codex: CodexRunner = { review };
+
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
+    await service.handlePullRequestWebhook({
+      ...createPullRequestPayload(),
+      requested_reviewer: {
+        login: "someone-else",
+      },
+    });
+
+    expect(listPullRequestFiles).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+    expect(publishReview).not.toHaveBeenCalled();
+    expect(publishFailureComment).not.toHaveBeenCalled();
+  });
+
+  it("ignores unsupported pull_request actions", async () => {
+    const hasPublishedResult = vi.fn().mockResolvedValue(false);
+    const listPullRequestFiles = vi.fn();
+    const getFileContent = vi.fn();
+    const publishReview = vi.fn();
+    const publishFailureComment = vi.fn();
+    const review = vi.fn();
+    const github: ReviewPlatform = {
+      hasPublishedResult,
+      listPullRequestFiles,
+      getFileContent,
+      publishReview,
+      publishFailureComment,
+    };
+    const codex: CodexRunner = { review };
+
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
+    await service.handlePullRequestWebhook({
+      ...createPullRequestPayload(),
+      action: "opened",
+    });
+    await service.handlePullRequestWebhook({
+      ...createPullRequestPayload(),
+      action: "reopened",
+    });
+    await service.handlePullRequestWebhook({
+      ...createPullRequestPayload(),
+      action: "synchronize",
+    });
+
+    expect(listPullRequestFiles).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+    expect(publishReview).not.toHaveBeenCalled();
+    expect(publishFailureComment).not.toHaveBeenCalled();
+  });
+
+  it("ignores payloads without requested_reviewer", async () => {
+    const hasPublishedResult = vi.fn().mockResolvedValue(false);
+    const listPullRequestFiles = vi.fn();
+    const getFileContent = vi.fn();
+    const publishReview = vi.fn();
+    const publishFailureComment = vi.fn();
+    const review = vi.fn();
+    const github: ReviewPlatform = {
+      hasPublishedResult,
+      listPullRequestFiles,
+      getFileContent,
+      publishReview,
+      publishFailureComment,
+    };
+    const codex: CodexRunner = { review };
+
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
+    const basePayload = createPullRequestPayload();
+    const payload = {
+      action: basePayload.action,
+      repository: basePayload.repository,
+      pull_request: basePayload.pull_request,
+    };
+    await service.handlePullRequestWebhook(payload);
+
+    expect(listPullRequestFiles).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+    expect(publishReview).not.toHaveBeenCalled();
     expect(publishFailureComment).not.toHaveBeenCalled();
   });
 });

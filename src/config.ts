@@ -10,22 +10,12 @@ const logLevelSchema = z.enum([
   "silent",
 ]);
 
-const optionalPositiveIntegerEnvSchema = z.preprocess((value) => {
-  if (typeof value !== "string") {
-    return value;
-  }
-
-  const trimmedValue = value.trim();
-  return trimmedValue === "" ? undefined : trimmedValue;
-}, z.coerce.number().int().positive().optional());
-
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(43191),
-  GITHUB_APP_ID: z.string().min(1, "GITHUB_APP_ID is required"),
-  GITHUB_PRIVATE_KEY: z.string().min(1, "GITHUB_PRIVATE_KEY is required"),
+  GITHUB_TOKEN: z.string().min(1, "GITHUB_TOKEN is required"),
+  GITHUB_BOT_LOGIN: z.string().min(1, "GITHUB_BOT_LOGIN is required"),
   GITHUB_WEBHOOK_SECRET: z.string().min(1, "GITHUB_WEBHOOK_SECRET is required"),
-  GITHUB_INSTALLATION_ID: optionalPositiveIntegerEnvSchema,
   CODEX_BIN: z.string().min(1).default("codex"),
   LOG_LEVEL: logLevelSchema.default("info"),
 });
@@ -33,10 +23,9 @@ const envSchema = z.object({
 export type AppConfig = {
   nodeEnv: "development" | "test" | "production";
   port: number;
-  githubAppId: string;
-  githubPrivateKey: string;
+  githubToken: string;
+  githubBotLogin: string;
   githubWebhookSecret: string;
-  githubInstallationId?: number;
   codexBin: string;
   logLevel: z.infer<typeof logLevelSchema>;
 };
@@ -47,12 +36,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
-    githubAppId: parsed.GITHUB_APP_ID,
-    githubPrivateKey: parsed.GITHUB_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    githubToken: parsed.GITHUB_TOKEN,
+    githubBotLogin: parsed.GITHUB_BOT_LOGIN,
     githubWebhookSecret: parsed.GITHUB_WEBHOOK_SECRET,
-    ...(parsed.GITHUB_INSTALLATION_ID
-      ? { githubInstallationId: parsed.GITHUB_INSTALLATION_ID }
-      : {}),
     codexBin: parsed.CODEX_BIN,
     logLevel: parsed.LOG_LEVEL,
   };

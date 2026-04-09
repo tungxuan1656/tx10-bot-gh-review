@@ -9,8 +9,7 @@ describe("createServer", () => {
     const secret = "super-secret";
     const webhooks = new Webhooks({ secret });
     const payload = JSON.stringify({
-      action: "opened",
-      installation: { id: 1 },
+      action: "review_requested",
       repository: { name: "repo", owner: { login: "acme" } },
       pull_request: {
         number: 1,
@@ -18,6 +17,9 @@ describe("createServer", () => {
         html_url: "https://github.com/acme/repo/pull/1",
         head: { sha: "head" },
         base: { sha: "base" },
+      },
+      requested_reviewer: {
+        login: "review-bot",
       },
     });
     const signature = await webhooks.sign(payload);
@@ -42,7 +44,14 @@ describe("createServer", () => {
       .send(payload);
 
     expect(response.status).toBe(202);
-    expect(handlePullRequestWebhook).toHaveBeenCalledTimes(1);
+    expect(handlePullRequestWebhook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "review_requested",
+        requested_reviewer: {
+          login: "review-bot",
+        },
+      }),
+    );
   });
 
   it("rejects invalid signatures", async () => {

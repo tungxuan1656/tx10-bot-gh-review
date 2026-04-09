@@ -13,7 +13,7 @@ const codex = createCodexRunner({
   bin: config.codexBin,
   logger,
 });
-const reviewService = new ReviewService(github, codex, logger);
+const reviewService = new ReviewService(github, codex, logger, config.githubBotLogin);
 const app = createServer({
   config,
   logger,

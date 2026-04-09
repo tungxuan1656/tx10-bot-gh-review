@@ -1,4 +1,3 @@
-import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 
 import type { AppConfig } from "../config.js";
@@ -26,11 +25,8 @@ type InstallationOctokit = Pick<Octokit, "paginate"> & {
   rest: Pick<Octokit["rest"], "issues" | "pulls" | "repos">;
 };
 
-type AppOctokit = Pick<Octokit, "request">;
-
 type GitHubReviewPlatformDependencies = {
-  createAppOctokit?: () => AppOctokit;
-  createInstallationOctokit?: (installationId: number) => InstallationOctokit;
+  createOctokit?: () => InstallationOctokit;
 };
 
 type ReviewResultMarkerAuthor = {
@@ -54,61 +50,18 @@ export function hasMarkerFromAppBot(
 
 export function createGitHubReviewPlatform(config: Pick<
   AppConfig,
-  "githubAppId" | "githubPrivateKey" | "githubInstallationId"
+  "githubToken" | "githubBotLogin"
 >, dependencies: GitHubReviewPlatformDependencies = {}): ReviewPlatform {
-  const getInstallationOctokit =
-    dependencies.createInstallationOctokit ??
-    ((installationId: number): InstallationOctokit => {
-      const resolvedInstallationId = config.githubInstallationId ?? installationId;
-
-      return new Octokit({
-        authStrategy: createAppAuth,
-        auth: {
-          appId: config.githubAppId,
-          privateKey: config.githubPrivateKey,
-          installationId: resolvedInstallationId,
-        },
-      });
-    });
-
-  const getAppOctokit =
-    dependencies.createAppOctokit ??
+  const getOctokit =
+    dependencies.createOctokit ??
     (() =>
       new Octokit({
-        authStrategy: createAppAuth,
-        auth: {
-          appId: config.githubAppId,
-          privateKey: config.githubPrivateKey,
-        },
+        auth: config.githubToken,
       }));
-
-  let appBotLoginPromise: Promise<string> | undefined;
-
-  const getAppBotLogin = () => {
-    if (!appBotLoginPromise) {
-      appBotLoginPromise = getAppOctokit()
-        .request("GET /app")
-        .then(({ data }) => {
-          if (!data?.slug) {
-            throw new Error("GitHub App metadata did not include a slug.");
-          }
-
-          return `${data.slug}[bot]`;
-        });
-    }
-
-    return appBotLoginPromise;
-  };
-
-  const getOctokitForInstallation = (installationId: number) => {
-    const resolvedInstallationId = config.githubInstallationId ?? installationId;
-
-    return getInstallationOctokit(resolvedInstallationId);
-  };
 
   return {
     async listPullRequestFiles(context) {
-      const octokit = getOctokitForInstallation(context.installationId);
+      const octokit = getOctokit();
       const files = await octokit.paginate(octokit.rest.pulls.listFiles, {
         owner: context.owner,
         repo: context.repo,
@@ -124,7 +77,7 @@ export function createGitHubReviewPlatform(config: Pick<
     },
 
     async getFileContent(context, path) {
-      const octokit = getOctokitForInstallation(context.installationId);
+      const octokit = getOctokit();
       const response = await octokit.rest.repos.getContent({
         owner: context.owner,
         repo: context.repo,
@@ -140,8 +93,7 @@ export function createGitHubReviewPlatform(config: Pick<
     },
 
     async hasPublishedResult(context, marker) {
-      const octokit = getOctokitForInstallation(context.installationId);
-      const appBotLogin = await getAppBotLogin();
+      const octokit = getOctokit();
 
       const [reviews, comments] = await Promise.all([
         octokit.paginate(octokit.rest.pulls.listReviews, {
@@ -158,11 +110,13 @@ export function createGitHubReviewPlatform(config: Pick<
         }),
       ]);
 
-      return [...reviews, ...comments].some((item) => hasMarkerFromAppBot(item, marker, appBotLogin));
+      return [...reviews, ...comments].some((item) =>
+        hasMarkerFromAppBot(item, marker, config.githubBotLogin),
+      );
     },
 
     async publishReview({ context, body, event, comments }) {
-      const octokit = getOctokitForInstallation(context.installationId);
+      const octokit = getOctokit();
 
       await octokit.rest.pulls.createReview({
         owner: context.owner,
@@ -176,7 +130,7 @@ export function createGitHubReviewPlatform(config: Pick<
     },
 
     async publishFailureComment(context, body) {
-      const octokit = getOctokitForInstallation(context.installationId);
+      const octokit = getOctokit();
 
       await octokit.rest.issues.createComment({
         owner: context.owner,

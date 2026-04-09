@@ -20,9 +20,6 @@ import { isSupportedPullRequestAction } from "./types.js";
 
 const webhookPayloadSchema = z.object({
   action: z.string(),
-  installation: z.object({
-    id: z.number().int().positive(),
-  }),
   repository: z.object({
     name: z.string().min(1),
     owner: z.object({
@@ -40,12 +37,18 @@ const webhookPayloadSchema = z.object({
       sha: z.string().min(1),
     }),
   }),
+  requested_reviewer: z
+    .object({
+      login: z.string().min(1),
+    })
+    .nullable()
+    .optional(),
 });
 
 function toPullRequestContext(payload: PullRequestWebhookPayload): PullRequestContext {
   return {
     action: payload.action,
-    installationId: payload.installation.id,
+    installationId: 0,
     owner: payload.repository.owner.login,
     repo: payload.repository.name,
     pullNumber: payload.pull_request.number,
@@ -152,6 +155,7 @@ export class ReviewService {
     private readonly github: ReviewPlatform,
     private readonly codex: CodexRunner,
     private readonly logger: AppLogger,
+    private readonly botLogin: string,
   ) {}
 
   async handlePullRequestWebhook(payload: unknown): Promise<void> {
@@ -163,6 +167,17 @@ export class ReviewService {
 
     if (!isSupportedPullRequestAction(parsed.data.action)) {
       this.logger.debug({ action: parsed.data.action }, "Ignored unsupported pull_request action");
+      return;
+    }
+
+    if (parsed.data.requested_reviewer?.login !== this.botLogin) {
+      this.logger.debug(
+        {
+          action: parsed.data.action,
+          requestedReviewer: parsed.data.requested_reviewer?.login,
+        },
+        "Ignored pull_request event for a different reviewer",
+      );
       return;
     }
 

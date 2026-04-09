@@ -1,17 +1,17 @@
 # AI Code Review Bot
 
-AI Code Review Bot is a GitHub App powered by Codex CLI. It receives pull request webhooks, builds a constrained AI review request from the diff plus current file contents, and publishes one GitHub review per head SHA with inline comments and an overall verdict.
+AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, waits until the configured bot account is explicitly requested as a reviewer, then builds a constrained AI review request from the diff plus current file contents and publishes one GitHub review per head SHA.
 
 ## MVP Scope
 
-- GitHub App webhook ingestion
+- Repository or organization webhook ingestion
 - Diff filtering for `.js`, `.jsx`, `.ts`, `.tsx`, `.py`, and `.java`
 - Codex CLI invocation with a strict JSON output contract
 - Deterministic GitHub review publishing:
-  - `REQUEST_CHANGES` for `critical` or `high`
-  - `COMMENT` for `medium`, `low`, or `info`
-  - `APPROVE` when there are no findings
-- Re-review on new pull request commits
+- `REQUEST_CHANGES` for `critical` or `high`
+- `COMMENT` for `medium`, `low`, or `info`
+- `APPROVE` when there are no findings
+- Review only when the configured bot account is requested via `review_requested`
 
 ## Project Layout
 
@@ -24,10 +24,9 @@ AI Code Review Bot is a GitHub App powered by Codex CLI. It receives pull reques
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `GITHUB_APP_ID` | Yes | GitHub App ID |
-| `GITHUB_PRIVATE_KEY` | Yes | GitHub App private key PEM. Escaped `\n` is supported. |
-| `GITHUB_WEBHOOK_SECRET` | Yes | Shared secret used to verify webhook signatures |
-| `GITHUB_INSTALLATION_ID` | No | Override installation resolution when a fixed installation is required |
+| `GITHUB_TOKEN` | Yes | Fine-grained PAT or classic PAT for the machine user |
+| `GITHUB_BOT_LOGIN` | Yes | Exact GitHub login of the machine user reviewer |
+| `GITHUB_WEBHOOK_SECRET` | Yes | Shared secret used to verify repository or organization webhooks |
 | `CODEX_BIN` | No | Codex CLI binary path. Defaults to `codex`. |
 | `LOG_LEVEL` | No | Pino log level. Defaults to `info`. |
 | `PORT` | No | HTTP port. Defaults to `43191`. |
@@ -41,13 +40,14 @@ AI Code Review Bot is a GitHub App powered by Codex CLI. It receives pull reques
    - `POST /github/webhooks`
    - `GET /healthz`
 
-## GitHub App Setup
+## GitHub Setup
 
-1. Create a GitHub App.
-2. Configure the webhook URL to point at `/github/webhooks`.
-3. Set the webhook secret to the same value used in `GITHUB_WEBHOOK_SECRET`.
-4. Grant pull request and issues write permissions so the bot can submit reviews and fallback comments.
-5. Install the app on the target repository.
+1. Create a dedicated GitHub account that will act as the reviewer bot.
+2. Add that account to the target repository or organization with enough access to read pull requests and submit reviews.
+3. Generate a token for that account and export it as `GITHUB_TOKEN`.
+4. Configure a repository or organization webhook that points at `/github/webhooks`.
+5. Set the webhook secret to the same value used in `GITHUB_WEBHOOK_SECRET`.
+6. Make sure pull request events are enabled in the webhook configuration.
 
 ## Validation
 
@@ -60,7 +60,7 @@ AI Code Review Bot is a GitHub App powered by Codex CLI. It receives pull reques
 
 ## Deployment
 
-The repo ships with a supported single-process `Dockerfile` that installs Codex CLI and exposes the default app port `43191`, but the recommended first production setup is still a small Linux server running the app with `systemd` behind `nginx`. If you use the container image, you still need to provide Codex authentication inside the container. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR head SHA before publishing a new result.
+The repo ships with a supported single-process `Dockerfile` that installs Codex CLI and exposes the default app port `43191`, but the recommended first production setup is still a small Linux server running the app with `systemd` behind `nginx`. If you use the container image, you still need to provide Codex authentication inside the container. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR head SHA before publishing a new result after the bot account is requested for review.
 
 ## Further Reading
 
