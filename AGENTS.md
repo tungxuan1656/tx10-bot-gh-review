@@ -57,7 +57,7 @@ Transform tasks into verifiable goals:
 
 For multi-step tasks, state a brief plan:
 
-```
+```text
 1. [Step] → verify: [check]
 2. [Step] → verify: [check]
 3. [Step] → verify: [check]
@@ -71,52 +71,67 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ## Project Direction
 
-This repository is a pnpm monorepo for a multi-source novel crawler built with Node.js and TypeScript.
+This repository is a root-level Node.js + TypeScript service for an AI-powered GitHub review bot.
 
-The system is intentionally split into:
+The MVP acts as a GitHub App that:
 
-- a local crawler/export runtime
-- a Supabase export registry
+- receives GitHub webhooks
+- fetches pull request diffs and head file contents
+- sends constrained review prompts to Codex CLI
+- publishes inline comments plus an overall GitHub review decision
 
 ## Architecture
 
-### Local runtime
+### HTTP layer
 
-- lives in `crawler`
-- crawls source sites
-- stores crawled books and chapters in local SQLite
-- builds ZIP archives locally
-- uploads ZIP files to Supabase Storage
-- upserts exported-book metadata into Supabase
+- lives in `src/http`
+- exposes `POST /github/webhooks`
+- exposes `GET /healthz`
+- verifies GitHub webhook signatures before dispatching review work
 
-### Supabase
+### Review engine
 
-- lives in `supabase`
-- stores only export-facing metadata
-- exposes read-only Edge Functions
-- is not the source of truth for crawled chapter content
+- lives in `src/review`
+- filters reviewable files from the PR diff
+- builds the Codex prompt from patch + current file content
+- validates Codex output against a strict JSON schema
+- maps findings deterministically to `APPROVE`, `COMMENT`, or `REQUEST_CHANGES`
 
-## Identity Rules
+### Documentation and validation
 
-- `books.id` is the canonical Supabase book ID
-- `books.source` identifies the crawler source
-- `books.slug` stores the source-local story slug
-- `exported_books.book_id` must reference canonical `books.id`
+- `docs/` contains architecture, review contract, and runbook docs
+- `test/` contains unit and integration tests for the MVP seams
+- CI must keep code, tests, and docs aligned in the same change set
 
-New flows must resolve books by `(source, slug)`.
+## Identity and Decision Rules
+
+- GitHub App auth is the only supported auth path for MVP flows
+- Review output is trusted only after schema validation
+- Final GitHub review state is derived from findings severity, not from free-form model wording
+- Idempotency is enforced per `(repo, pull request number, head SHA)`
+- Invalid inline comment targets must fall back to the top-level review body, not fail the whole review
+
+## Scope Rules
+
+1. This repo is a single runnable root service, not a pnpm monorepo.
+2. New MVP behavior should extend the existing root app instead of inventing extra packages or services.
+3. The bot reviews code only; it must not execute untrusted PR code.
+4. GitHub interactions should use GitHub App credentials, not personal access token fallbacks.
+5. Codex integration should prefer deterministic machine-readable contracts over regex or free-text parsing.
+6. Docs, tests, and behavior changes must stay aligned in the same change set.
 
 ## Project Rules
 
-1. Local SQLite is the source of truth for crawl data.
-2. Supabase is an export registry and read API layer only.
-3. New write flows belong in the local runtime, not in Supabase Edge Functions.
-4. Node.js workspace packages should use `@supabase/supabase-js`.
-5. Supabase Edge Functions should keep Deno-compatible imports.
-6. Schema, functions, and docs must stay aligned in the same change set.
+1. Keep the service stateless for MVP unless the task explicitly introduces durable state.
+2. Prefer small, explicit modules under `src/http` and `src/review` over premature abstraction.
+3. Keep supported file filtering and review-decision logic deterministic and test-covered.
+4. On transient failures, prefer a neutral PR comment over an incorrect approval or blocking review.
+5. Do not broaden supported languages, config systems, or deployment topology unless requested.
+6. Preserve the current documentation structure in `README.md` and `docs/` when updating behavior.
 
-## Monorepo Guidance
+## Repository Layout Guidance
 
-- keep runnable projects at the top level as `crawler/` and `supabase/`
-- introduce shared code only when reuse becomes real
-- keep Supabase migrations and Edge Functions isolated under `supabase/`
-- prefer small, explicit workspace boundaries over premature shared packages
+- keep the runnable app at the repo root
+- keep webhook/server concerns in `src/http`
+- keep review, prompt, Codex, and GitHub publishing logic in `src/review`
+- add scripts under `scripts/` only when they support local development, validation, or docs
