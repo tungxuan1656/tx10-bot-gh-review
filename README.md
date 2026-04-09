@@ -60,7 +60,7 @@ AI Code Review Bot is a GitHub App powered by Codex CLI. It receives pull reques
 
 ## Deployment
 
-The repo ships with a `Dockerfile` for a single-process deployment, but the recommended first production setup is a small Linux server running the app with `systemd` behind `nginx`. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR head SHA before publishing a new result.
+The repo ships with a supported single-process `Dockerfile` that installs Codex CLI and exposes the default app port `43191`, but the recommended first production setup is still a small Linux server running the app with `systemd` behind `nginx`. If you use the container image, you still need to provide Codex authentication inside the container. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR head SHA before publishing a new result.
 
 ## Further Reading
 

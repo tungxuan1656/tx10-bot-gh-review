@@ -22,25 +22,88 @@ type ReviewPlatform = {
   publishFailureComment(context: PullRequestContext, body: string): Promise<void>;
 };
 
+type InstallationOctokit = Pick<Octokit, "paginate"> & {
+  rest: Pick<Octokit["rest"], "issues" | "pulls" | "repos">;
+};
+
+type AppOctokit = Pick<Octokit, "request">;
+
+type GitHubReviewPlatformDependencies = {
+  createAppOctokit?: () => AppOctokit;
+  createInstallationOctokit?: (installationId: number) => InstallationOctokit;
+};
+
+type ReviewResultMarkerAuthor = {
+  body?: string | null;
+  user?: {
+    login?: string | null;
+  } | null;
+};
+
 function decodeBase64Content(content: string): string {
   return Buffer.from(content, "base64").toString("utf8");
+}
+
+export function hasMarkerFromAppBot(
+  item: ReviewResultMarkerAuthor,
+  marker: string,
+  appBotLogin: string,
+): boolean {
+  return item.body?.includes(marker) === true && item.user?.login === appBotLogin;
 }
 
 export function createGitHubReviewPlatform(config: Pick<
   AppConfig,
   "githubAppId" | "githubPrivateKey" | "githubInstallationId"
->): ReviewPlatform {
+>, dependencies: GitHubReviewPlatformDependencies = {}): ReviewPlatform {
+  const getInstallationOctokit =
+    dependencies.createInstallationOctokit ??
+    ((installationId: number): InstallationOctokit => {
+      const resolvedInstallationId = config.githubInstallationId ?? installationId;
+
+      return new Octokit({
+        authStrategy: createAppAuth,
+        auth: {
+          appId: config.githubAppId,
+          privateKey: config.githubPrivateKey,
+          installationId: resolvedInstallationId,
+        },
+      });
+    });
+
+  const getAppOctokit =
+    dependencies.createAppOctokit ??
+    (() =>
+      new Octokit({
+        authStrategy: createAppAuth,
+        auth: {
+          appId: config.githubAppId,
+          privateKey: config.githubPrivateKey,
+        },
+      }));
+
+  let appBotLoginPromise: Promise<string> | undefined;
+
+  const getAppBotLogin = () => {
+    if (!appBotLoginPromise) {
+      appBotLoginPromise = getAppOctokit()
+        .request("GET /app")
+        .then(({ data }) => {
+          if (!data?.slug) {
+            throw new Error("GitHub App metadata did not include a slug.");
+          }
+
+          return `${data.slug}[bot]`;
+        });
+    }
+
+    return appBotLoginPromise;
+  };
+
   const getOctokitForInstallation = (installationId: number) => {
     const resolvedInstallationId = config.githubInstallationId ?? installationId;
 
-    return new Octokit({
-      authStrategy: createAppAuth,
-      auth: {
-        appId: config.githubAppId,
-        privateKey: config.githubPrivateKey,
-        installationId: resolvedInstallationId,
-      },
-    });
+    return getInstallationOctokit(resolvedInstallationId);
   };
 
   return {
@@ -78,6 +141,7 @@ export function createGitHubReviewPlatform(config: Pick<
 
     async hasPublishedResult(context, marker) {
       const octokit = getOctokitForInstallation(context.installationId);
+      const appBotLogin = await getAppBotLogin();
 
       const [reviews, comments] = await Promise.all([
         octokit.paginate(octokit.rest.pulls.listReviews, {
@@ -94,7 +158,7 @@ export function createGitHubReviewPlatform(config: Pick<
         }),
       ]);
 
-      return [...reviews, ...comments].some((item) => item.body?.includes(marker));
+      return [...reviews, ...comments].some((item) => hasMarkerFromAppBot(item, marker, appBotLogin));
     },
 
     async publishReview({ context, body, event, comments }) {

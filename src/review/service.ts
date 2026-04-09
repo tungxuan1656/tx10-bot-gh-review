@@ -98,6 +98,53 @@ function separateInlineAndOverflowFindings(
   return { comments, overflowFindings };
 }
 
+function isInvalidInlineReviewCommentError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as {
+    errors?: Array<{
+      code?: string;
+      field?: string;
+      message?: string;
+      resource?: string;
+    }>;
+    message?: string;
+    status?: number;
+  };
+
+  if (candidate.status !== 422) {
+    return false;
+  }
+
+  const lowerCaseMessage = candidate.message?.toLowerCase() ?? "";
+  if (
+    lowerCaseMessage.includes("review comments is invalid") ||
+    lowerCaseMessage.includes("review threads is invalid")
+  ) {
+    return true;
+  }
+
+  return (candidate.errors ?? []).some((validationError) => {
+    const resource = validationError.resource?.toLowerCase();
+    const field = validationError.field?.toLowerCase();
+    const message = validationError.message?.toLowerCase() ?? "";
+
+    return (
+      resource === "pullrequestreviewcomment" ||
+      resource === "pullrequestreviewthread" ||
+      field === "line" ||
+      field === "side" ||
+      field === "start_line" ||
+      field === "start_side" ||
+      field === "path" ||
+      message.includes("review comment") ||
+      message.includes("review thread")
+    );
+  });
+}
+
 export class ReviewService {
   private readonly activeRuns = new Set<string>();
 
@@ -189,13 +236,42 @@ export class ReviewService {
         event,
         overflowFindings,
       });
-
-      await this.github.publishReview({
-        context,
-        body,
+      const fallbackBody = buildReviewBody({
+        headSha: context.headSha,
+        score: outcome.result.score,
+        summary: outcome.result.summary,
         event,
-        comments,
+        overflowFindings: outcome.result.findings,
       });
+
+      try {
+        await this.github.publishReview({
+          context,
+          body,
+          event,
+          comments,
+        });
+      } catch (error) {
+        if (!comments.length || !isInvalidInlineReviewCommentError(error)) {
+          throw error;
+        }
+
+        this.logger.warn(
+          {
+            commentCount: comments.length,
+            error,
+            runKey,
+          },
+          "Retrying review without inline comments after GitHub rejected the location",
+        );
+
+        await this.github.publishReview({
+          context,
+          body: fallbackBody,
+          event,
+          comments: [],
+        });
+      }
     } catch (error) {
       this.logger.error({ error, runKey }, "Pull request review run failed");
       await this.github.publishFailureComment(

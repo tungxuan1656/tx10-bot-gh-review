@@ -194,4 +194,77 @@ describe("ReviewService", () => {
     expect(publishReview).toHaveBeenCalledTimes(1);
     expect(publishFailureComment).not.toHaveBeenCalled();
   });
+
+  it("retries with a body-only review when GitHub rejects inline comment locations", async () => {
+    const hasPublishedResult = vi.fn().mockResolvedValue(false);
+    const listPullRequestFiles = vi.fn().mockResolvedValue([
+      {
+        path: "src/app.ts",
+        status: "modified",
+        patch: "@@ -1 +1 @@\n-console.log('a')\n+console.log('b')",
+      },
+    ]);
+    const getFileContent = vi.fn().mockResolvedValue("console.log('b');");
+    const publishReview = vi
+      .fn()
+      .mockRejectedValueOnce({
+        status: 422,
+        message: "Review comments is invalid.",
+        errors: [
+          {
+            resource: "PullRequestReviewComment",
+            field: "line",
+            code: "invalid",
+          },
+        ],
+      })
+      .mockResolvedValueOnce(undefined);
+    const publishFailureComment = vi.fn().mockResolvedValue(undefined);
+    const github: ReviewPlatform = {
+      hasPublishedResult,
+      listPullRequestFiles,
+      getFileContent,
+      publishReview,
+      publishFailureComment,
+    };
+
+    const codex: CodexRunner = {
+      review: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          summary: "Found one issue.",
+          score: 6,
+          decision: "request_changes",
+          findings: [
+            {
+              severity: "high",
+              path: "src/app.ts",
+              line: 1,
+              title: "Console statement committed",
+              comment: "Use the structured logger instead.",
+            },
+          ],
+        },
+      }),
+    };
+
+    const service = new ReviewService(github, codex, createLoggerStub());
+    await service.handlePullRequestWebhook(createPullRequestPayload());
+
+    const firstPublishInput = publishReview.mock.calls[0]?.[0] as {
+      body: string;
+      comments: unknown[];
+    };
+    const secondPublishInput = publishReview.mock.calls[1]?.[0] as {
+      body: string;
+      comments: unknown[];
+    };
+
+    expect(publishReview).toHaveBeenCalledTimes(2);
+    expect(firstPublishInput.comments).toHaveLength(1);
+    expect(secondPublishInput.comments).toEqual([]);
+    expect(secondPublishInput.body).toContain("### Additional findings");
+    expect(secondPublishInput.body).toContain("Console statement committed");
+    expect(publishFailureComment).not.toHaveBeenCalled();
+  });
 });

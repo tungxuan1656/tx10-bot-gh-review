@@ -10,13 +10,22 @@ const logLevelSchema = z.enum([
   "silent",
 ]);
 
+const optionalPositiveIntegerEnvSchema = z.preprocess((value) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmedValue = value.trim();
+  return trimmedValue === "" ? undefined : trimmedValue;
+}, z.coerce.number().int().positive().optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(43191),
   GITHUB_APP_ID: z.string().min(1, "GITHUB_APP_ID is required"),
   GITHUB_PRIVATE_KEY: z.string().min(1, "GITHUB_PRIVATE_KEY is required"),
   GITHUB_WEBHOOK_SECRET: z.string().min(1, "GITHUB_WEBHOOK_SECRET is required"),
-  GITHUB_INSTALLATION_ID: z.coerce.number().int().positive().optional(),
+  GITHUB_INSTALLATION_ID: optionalPositiveIntegerEnvSchema,
   CODEX_BIN: z.string().min(1).default("codex"),
   LOG_LEVEL: logLevelSchema.default("info"),
 });

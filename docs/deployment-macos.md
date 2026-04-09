@@ -142,6 +142,9 @@ Start the app:
 
 ```bash
 cd ~/tx10-bot-gh-review
+set -a
+source .env
+set +a
 pm2 start dist/http/index.js --name gh-review-bot --interpreter node --update-env
 ```
 
@@ -157,6 +160,12 @@ Persist the process list:
 
 ```bash
 pm2 save
+```
+
+If you later change values in `.env`, reload them from a shell that has sourced the file and then run:
+
+```bash
+pm2 restart gh-review-bot --update-env
 ```
 
 ## 7. Configure PM2 Startup on macOS
