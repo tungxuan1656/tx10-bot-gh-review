@@ -30,7 +30,7 @@ AI Code Review Bot is a GitHub App powered by Codex CLI. It receives pull reques
 | `GITHUB_INSTALLATION_ID` | No | Override installation resolution when a fixed installation is required |
 | `CODEX_BIN` | No | Codex CLI binary path. Defaults to `codex`. |
 | `LOG_LEVEL` | No | Pino log level. Defaults to `info`. |
-| `PORT` | No | HTTP port. Defaults to `3000`. |
+| `PORT` | No | HTTP port. Defaults to `43191`. |
 
 ## Local Development
 
@@ -60,10 +60,12 @@ AI Code Review Bot is a GitHub App powered by Codex CLI. It receives pull reques
 
 ## Deployment
 
-The repo ships with a `Dockerfile` for a single-process deployment. Render, Railway, or a small VPS are suitable for the MVP. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR head SHA before publishing a new result.
+The repo ships with a `Dockerfile` for a single-process deployment, but the recommended first production setup is a small Linux server running the app with `systemd` behind `nginx`. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR head SHA before publishing a new result.
 
 ## Further Reading
 
 - [Architecture](docs/architecture.md)
+- [Deployment Guide](docs/deployment.md)
+- [macOS + PM2 + Cloudflare Tunnel Guide](docs/deployment-macos.md)
 - [Review Contract](docs/review-contract.md)
 - [Runbook](docs/runbook.md)

@@ -12,7 +12,7 @@ pnpm dev
 Use:
 
 ```bash
-curl http://localhost:3000/healthz
+curl http://localhost:43191/healthz
 ```
 
 Expected response:
