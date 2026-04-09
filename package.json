@@ -1,0 +1,44 @@
+{
+  "name": "tx10-bot-gh-review",
+  "private": true,
+  "version": "1.0.0",
+  "description": "GitHub App review bot powered by Codex CLI",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/http/index.ts",
+    "docs:check-links": "tsx scripts/check-doc-links.ts",
+    "docs:lint": "markdownlint-cli2 \"README.md\" \"docs/**/*.md\"",
+    "lint": "eslint src test scripts --ext .ts",
+    "start": "node dist/http/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "validate": "pnpm lint && pnpm typecheck && pnpm test && pnpm docs:lint && pnpm docs:check-links"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.28.1",
+  "dependencies": {
+    "@octokit/auth-app": "^8.2.0",
+    "@octokit/rest": "^22.0.1",
+    "@octokit/webhooks": "^14.2.0",
+    "express": "^5.2.1",
+    "pino": "^10.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.2",
+    "@types/supertest": "^7.2.0",
+    "eslint": "^10.2.0",
+    "markdownlint-cli2": "^0.22.0",
+    "supertest": "^7.2.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.58.1",
+    "vitest": "^4.1.3"
+  }
+}
