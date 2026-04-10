@@ -1,61 +1,45 @@
-import { z } from "zod";
-
 import { determineReviewEvent } from "./decision.js";
 import { filterReviewableFiles } from "./filter-files.js";
 import { isCommentableRightSideLine } from "./patch.js";
 import { buildReviewPrompt } from "./prompt.js";
 import { buildFailureComment, buildReviewBody, buildReviewMarker } from "./summary.js";
+import { createChildLogger } from "../logger.js";
 import type { AppLogger } from "../logger.js";
 import type { CodexRunner } from "./codex.js";
 import type { ReviewPlatform } from "./github-platform.js";
+import type { NormalizedPullRequestEvent } from "./webhook-event.js";
 import type {
   GitHubPullRequestFile,
   InlineReviewComment,
   PullRequestContext,
-  PullRequestWebhookPayload,
   ReviewFinding,
   ReviewableFile,
 } from "./types.js";
-import { isSupportedPullRequestAction } from "./types.js";
 
-const webhookPayloadSchema = z.object({
-  action: z.string(),
-  repository: z.object({
-    name: z.string().min(1),
-    owner: z.object({
-      login: z.string().min(1),
-    }),
-  }),
-  pull_request: z.object({
-    number: z.number().int().positive(),
-    title: z.string().min(1),
-    html_url: z.string().url(),
-    head: z.object({
-      sha: z.string().min(1),
-    }),
-    base: z.object({
-      sha: z.string().min(1),
-    }),
-  }),
-  requested_reviewer: z
-    .object({
-      login: z.string().min(1),
-    })
-    .nullable()
-    .optional(),
-});
+type RoutedPullRequestEvent =
+  | {
+      status: "trigger_review";
+    }
+  | {
+      status: "cancel_requested";
+      reason: "cancel_requested";
+    }
+  | {
+      status: "ignored";
+      reason: "manual_only_policy" | "reviewer_mismatch" | "unsupported_action";
+    };
 
-function toPullRequestContext(payload: PullRequestWebhookPayload): PullRequestContext {
+function toPullRequestContext(event: NormalizedPullRequestEvent): PullRequestContext {
   return {
-    action: payload.action,
+    action: event.action,
     installationId: 0,
-    owner: payload.repository.owner.login,
-    repo: payload.repository.name,
-    pullNumber: payload.pull_request.number,
-    title: payload.pull_request.title,
-    htmlUrl: payload.pull_request.html_url,
-    headSha: payload.pull_request.head.sha,
-    baseSha: payload.pull_request.base.sha,
+    owner: event.owner,
+    repo: event.repo,
+    pullNumber: event.pullNumber,
+    title: event.title,
+    htmlUrl: event.htmlUrl,
+    headSha: event.headSha,
+    baseSha: event.baseSha,
   };
 }
 
@@ -162,6 +146,7 @@ function getErrorStatusCode(error: unknown): number | null {
 
 export class ReviewService {
   private readonly activeRuns = new Set<string>();
+  private readonly cancelRequestedRuns = new Set<string>();
 
   constructor(
     private readonly github: ReviewPlatform,
@@ -170,70 +155,155 @@ export class ReviewService {
     private readonly botLogin: string,
   ) {}
 
-  async handlePullRequestWebhook(payload: unknown): Promise<void> {
-    const parsed = webhookPayloadSchema.safeParse(payload);
-    if (!parsed.success) {
-      this.logger.warn({ issues: parsed.error.issues }, "Ignored invalid pull_request payload");
+  async handlePullRequestEvent(event: NormalizedPullRequestEvent): Promise<void> {
+    const deliveryLogger = this.createDeliveryLogger(event);
+    const routedEvent = this.routePullRequestEvent(event);
+
+    deliveryLogger.info(
+      {
+        beforeSha: event.beforeSha,
+        botStillRequested: event.botStillRequested,
+        event: "webhook.routed",
+        requestedReviewerLogins: event.requestedReviewerLogins,
+        status: routedEvent.status,
+        ...(routedEvent.status !== "trigger_review" ? { reason: routedEvent.reason } : {}),
+      },
+      "Webhook routed",
+    );
+
+    if (routedEvent.status === "ignored") {
       return;
     }
 
-    if (!isSupportedPullRequestAction(parsed.data.action)) {
-      this.logger.debug({ action: parsed.data.action }, "Ignored unsupported pull_request action");
+    if (routedEvent.status === "cancel_requested") {
+      this.requestCancellation(event, deliveryLogger);
       return;
     }
 
-    if (parsed.data.requested_reviewer?.login !== this.botLogin) {
-      this.logger.debug(
+    await this.reviewPullRequest(event, deliveryLogger);
+  }
+
+  private createDeliveryLogger(event: NormalizedPullRequestEvent): AppLogger {
+    return createChildLogger(this.logger, {
+      action: event.action,
+      component: "review",
+      deliveryId: event.deliveryId,
+      eventName: event.eventName,
+      headSha: event.headSha,
+      owner: event.owner,
+      pullNumber: event.pullNumber,
+      repo: event.repo,
+      requestedReviewerLogin: event.requestedReviewerLogin,
+      senderLogin: event.senderLogin,
+    });
+  }
+
+  private routePullRequestEvent(event: NormalizedPullRequestEvent): RoutedPullRequestEvent {
+    if (event.actionKind === "review_requested") {
+      return event.requestedReviewerLogin === this.botLogin
+        ? { status: "trigger_review" }
+        : { status: "ignored", reason: "reviewer_mismatch" };
+    }
+
+    if (event.actionKind === "review_request_removed") {
+      return event.requestedReviewerLogin === this.botLogin
+        ? { status: "cancel_requested", reason: "cancel_requested" }
+        : { status: "ignored", reason: "reviewer_mismatch" };
+    }
+
+    if (event.actionKind === "synchronize") {
+      return {
+        status: "ignored",
+        reason: "manual_only_policy",
+      };
+    }
+
+    return {
+      status: "ignored",
+      reason: "unsupported_action",
+    };
+  }
+
+  private requestCancellation(event: NormalizedPullRequestEvent, deliveryLogger: AppLogger): void {
+    const runKey = buildRunKey(toPullRequestContext(event));
+
+    if (!this.activeRuns.has(runKey)) {
+      deliveryLogger.info(
         {
-          action: parsed.data.action,
-          owner: parsed.data.repository.owner.login,
-          pullNumber: parsed.data.pull_request.number,
-          repo: parsed.data.repository.name,
-          requestedReviewer: parsed.data.requested_reviewer?.login,
+          event: "review.cancel_missed",
+          reason: "cancel_requested",
+          runKey,
+          status: "cancel_missed",
         },
-        "Ignored pull_request event for a different reviewer",
+        "Review cancel missed",
       );
       return;
     }
 
-    this.logger.info(
+    this.cancelRequestedRuns.add(runKey);
+    deliveryLogger.info(
       {
-        action: parsed.data.action,
-        headSha: parsed.data.pull_request.head.sha,
-        owner: parsed.data.repository.owner.login,
-        pullNumber: parsed.data.pull_request.number,
-        repo: parsed.data.repository.name,
-        requestedReviewer: parsed.data.requested_reviewer?.login,
+        event: "review.cancel_requested",
+        reason: "cancel_requested",
+        runKey,
+        status: "cancel_requested",
       },
-      "Accepted pull_request review request for processing",
+      "Review cancel requested",
     );
-
-    await this.reviewPullRequest({
-      ...parsed.data,
-      action: parsed.data.action,
-    });
   }
 
-  private async reviewPullRequest(payload: PullRequestWebhookPayload): Promise<void> {
-    const context = toPullRequestContext(payload);
+  private isCancellationRequested(runKey: string): boolean {
+    return this.cancelRequestedRuns.has(runKey);
+  }
+
+  private shouldStopForCancellation(runLogger: AppLogger, runKey: string, stage: string): boolean {
+    if (!this.isCancellationRequested(runKey)) {
+      return false;
+    }
+
+    runLogger.info(
+      {
+        event: "review.canceled",
+        reason: "canceled_before_publish",
+        runKey,
+        stage,
+        status: "canceled",
+      },
+      "Review canceled",
+    );
+    return true;
+  }
+
+  private async reviewPullRequest(
+    event: NormalizedPullRequestEvent,
+    deliveryLogger: AppLogger,
+  ): Promise<void> {
+    const context = toPullRequestContext(event);
     const runKey = buildRunKey(context);
     const marker = buildReviewMarker(context.headSha);
     const startedAt = Date.now();
+    const runLogger = createChildLogger(deliveryLogger, {
+      runKey,
+    });
+    let publishedReview = false;
 
-    this.logger.info(
+    runLogger.info(
       {
-        action: context.action,
-        headSha: context.headSha,
-        owner: context.owner,
-        pullNumber: context.pullNumber,
-        repo: context.repo,
-        runKey,
+        event: "review.started",
+        status: "started",
       },
-      "Review run started",
+      "Review started",
     );
 
     if (this.activeRuns.has(runKey)) {
-      this.logger.info({ runKey }, "Skipped duplicate in-flight review run");
+      runLogger.info(
+        {
+          event: "review.completed",
+          reason: "duplicate_inflight",
+          status: "ignored",
+        },
+        "Review completed",
+      );
       return;
     }
 
@@ -242,53 +312,82 @@ export class ReviewService {
     try {
       let hasPublishedResult = false;
 
-      this.logger.debug({ runKey }, "Checking existing published review marker");
-
       try {
         hasPublishedResult = await this.github.hasPublishedResult(context, marker);
       } catch (error) {
         const status = getErrorStatusCode(error);
 
         if (status === 404) {
-          this.logger.warn(
+          runLogger.warn(
             {
               error,
-              owner: context.owner,
-              pullNumber: context.pullNumber,
-              repo: context.repo,
-              runKey,
-              status,
+              event: "review.idempotency_checked",
+              httpStatus: status,
+              reason: "marker_not_found",
+              status: "completed",
             },
-            "Idempotency check returned not found; continuing review run",
+            "Review idempotency marker missing",
           );
         } else {
           throw error;
         }
       }
 
+      runLogger.info(
+        {
+          event: "review.idempotency_checked",
+          hasPublishedResult,
+          status: "completed",
+        },
+        "Review idempotency checked",
+      );
+
       if (hasPublishedResult) {
-        this.logger.info({ runKey }, "Skipped already published review result");
+        runLogger.info(
+          {
+            event: "review.completed",
+            reason: "already_published",
+            status: "ignored",
+          },
+          "Review completed",
+        );
         return;
       }
 
-      this.logger.debug({ runKey }, "No published review marker found; continuing pipeline");
+      if (this.shouldStopForCancellation(runLogger, runKey, "after_idempotency")) {
+        return;
+      }
 
       const changedFiles = await this.github.listPullRequestFiles(context);
-      this.logger.info(
+      runLogger.info(
         {
           changedFileCount: changedFiles.length,
-          runKey,
+          event: "review.files_listed",
+          status: "completed",
         },
-        "Fetched changed files from pull request",
+        "Review files listed",
       );
 
-      const reviewableFiles = await this.hydrateReviewableFiles(context, changedFiles, runKey);
+      if (this.shouldStopForCancellation(runLogger, runKey, "after_list_files")) {
+        return;
+      }
+
+      const reviewableFiles = await this.hydrateReviewableFiles(context, changedFiles, runLogger);
 
       if (reviewableFiles.length === 0) {
-        this.logger.info(
-          { runKey, changedFileCount: changedFiles.length },
-          "No reviewable files found for pull request",
+        runLogger.info(
+          {
+            changedFileCount: changedFiles.length,
+            event: "review.completed",
+            reason: "no_reviewable_files",
+            status: "ignored",
+          },
+          "Review completed",
         );
+        return;
+      }
+
+      if (this.shouldStopForCancellation(runLogger, runKey, "after_hydrate_files")) {
         return;
       }
 
@@ -301,24 +400,31 @@ export class ReviewService {
         files: reviewableFiles,
       });
 
-      this.logger.debug(
+      runLogger.info(
         {
+          event: "review.prompt_built",
           promptChars: prompt.length,
           reviewableFileCount: reviewableFiles.length,
-          runKey,
+          status: "completed",
         },
-        "Built review prompt for Codex",
+        "Review prompt built",
       );
 
-      const outcome = await this.codex.review(prompt);
+      const outcome = await this.codex.review(
+        prompt,
+        createChildLogger(runLogger, {
+          component: "codex",
+        }),
+      );
 
       if (!outcome.ok) {
-        this.logger.warn(
+        runLogger.warn(
           {
+            event: "review.codex_failed",
             reason: outcome.reason,
-            runKey,
+            status: "failed",
           },
-          "Codex review failed; publishing neutral failure comment",
+          "Review Codex step failed",
         );
 
         await this.github.publishFailureComment(
@@ -331,44 +437,54 @@ export class ReviewService {
         return;
       }
 
-      this.logger.info(
+      runLogger.info(
         {
           decision: outcome.result.decision,
+          event: "review.codex_completed",
           findingCount: outcome.result.findings.length,
-          runKey,
           score: outcome.result.score,
+          status: "completed",
         },
-        "Codex review completed with valid result",
+        "Review Codex step completed",
       );
 
-      const event = determineReviewEvent(outcome.result.findings);
+      if (this.shouldStopForCancellation(runLogger, runKey, "after_codex")) {
+        return;
+      }
+
+      const reviewEvent = determineReviewEvent(outcome.result.findings);
       const { comments, overflowFindings } = separateInlineAndOverflowFindings(
         outcome.result.findings,
         reviewableFiles,
       );
 
-      this.logger.info(
+      runLogger.info(
         {
-          event,
+          event: "review.publish_started",
           inlineCommentCount: comments.length,
           overflowFindingCount: overflowFindings.length,
-          runKey,
+          reviewEvent,
+          status: "started",
         },
-        "Publishing pull request review",
+        "Review publish started",
       );
+
+      if (this.shouldStopForCancellation(runLogger, runKey, "before_publish")) {
+        return;
+      }
 
       const body = buildReviewBody({
         headSha: context.headSha,
         score: outcome.result.score,
         summary: outcome.result.summary,
-        event,
+        event: reviewEvent,
         overflowFindings,
       });
       const fallbackBody = buildReviewBody({
         headSha: context.headSha,
         score: outcome.result.score,
         summary: outcome.result.summary,
-        event,
+        event: reviewEvent,
         overflowFindings: outcome.result.findings,
       });
 
@@ -376,48 +492,65 @@ export class ReviewService {
         await this.github.publishReview({
           context,
           body,
-          event,
+          event: reviewEvent,
           comments,
         });
-        this.logger.info(
+        publishedReview = true;
+        runLogger.info(
           {
-            event,
+            event: "review.published",
             inlineCommentCount: comments.length,
-            runKey,
+            reviewEvent,
+            status: "published",
           },
-          "Published pull request review",
+          "Review published",
         );
       } catch (error) {
         if (!comments.length || !isInvalidInlineReviewCommentError(error)) {
           throw error;
         }
 
-        this.logger.warn(
+        runLogger.warn(
           {
             commentCount: comments.length,
             error,
-            runKey,
+            event: "review.publish_fallback",
+            reason: "invalid_inline_location",
+            status: "retrying",
           },
-          "Retrying review without inline comments after GitHub rejected the location",
+          "Review publish fallback",
         );
+
+        if (this.shouldStopForCancellation(runLogger, runKey, "before_publish_fallback")) {
+          return;
+        }
 
         await this.github.publishReview({
           context,
           body: fallbackBody,
-          event,
+          event: reviewEvent,
           comments: [],
         });
-        this.logger.info(
+        publishedReview = true;
+        runLogger.info(
           {
-            event,
+            event: "review.publish_fallback",
             fallbackMode: true,
-            runKey,
+            reviewEvent,
+            status: "published",
           },
-          "Published pull request review without inline comments",
+          "Review published",
         );
       }
     } catch (error) {
-      this.logger.error({ error, runKey }, "Pull request review run failed");
+      runLogger.error(
+        {
+          error,
+          event: "review.failed",
+          status: "failed",
+        },
+        "Review failed",
+      );
 
       try {
         await this.github.publishFailureComment(
@@ -428,23 +561,38 @@ export class ReviewService {
           }),
         );
       } catch (failureCommentError) {
-        this.logger.error(
+        runLogger.error(
           {
+            event: "review.failed",
             failureCommentError,
             originalError: error,
-            runKey,
+            reason: "failure_comment_failed",
+            status: "failed",
           },
-          "Failed to publish fallback failure comment",
+          "Review failure comment publish failed",
         );
       }
     } finally {
+      if (publishedReview && this.isCancellationRequested(runKey)) {
+        runLogger.info(
+          {
+            event: "review.cancel_missed",
+            reason: "cancel_requested",
+            status: "cancel_missed",
+          },
+          "Review cancel missed",
+        );
+      }
+
       this.activeRuns.delete(runKey);
-      this.logger.info(
+      this.cancelRequestedRuns.delete(runKey);
+      runLogger.info(
         {
           durationMs: Date.now() - startedAt,
-          runKey,
+          event: "review.completed",
+          status: "completed",
         },
-        "Review run completed",
+        "Review completed",
       );
     }
   }
@@ -452,18 +600,9 @@ export class ReviewService {
   private async hydrateReviewableFiles(
     context: PullRequestContext,
     changedFiles: GitHubPullRequestFile[],
-    runKey: string,
+    runLogger: AppLogger,
   ): Promise<ReviewableFile[]> {
     const filteredFiles = filterReviewableFiles(changedFiles);
-
-    this.logger.debug(
-      {
-        changedFileCount: changedFiles.length,
-        filteredFileCount: filteredFiles.length,
-        runKey,
-      },
-      "Filtered pull request files for review",
-    );
 
     const hydratedFiles = await Promise.all(
       filteredFiles.map(async (file) => {
@@ -480,13 +619,15 @@ export class ReviewService {
             content,
           };
         } catch (error) {
-          this.logger.warn(
+          runLogger.warn(
             {
               error,
+              event: "review.file_skipped",
               path: file.path,
-              runKey,
+              reason: "file_unreadable",
+              status: "skipped",
             },
-            "Skipping unreadable pull request file",
+            "Review file skipped",
           );
           return null;
         }
@@ -495,13 +636,16 @@ export class ReviewService {
 
     const reviewableFiles = hydratedFiles.filter((file): file is ReviewableFile => file !== null);
 
-    this.logger.info(
+    runLogger.info(
       {
+        changedFileCount: changedFiles.length,
+        event: "review.files_hydrated",
+        filteredFileCount: filteredFiles.length,
         reviewableFileCount: reviewableFiles.length,
-        runKey,
         skippedFileCount: hydratedFiles.length - reviewableFiles.length,
+        status: "completed",
       },
-      "Hydrated reviewable files with patch and content",
+      "Review files hydrated",
     );
 
     return reviewableFiles;

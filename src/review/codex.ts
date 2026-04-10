@@ -40,7 +40,7 @@ const outputSchema = {
 } as const;
 
 export type CodexRunner = {
-  review(prompt: string): Promise<CodexReviewOutcome>;
+  review(prompt: string, logger?: AppLogger): Promise<CodexReviewOutcome>;
 };
 
 export function createCodexRunner(input: {
@@ -51,16 +51,20 @@ export function createCodexRunner(input: {
   const timeoutMs = input.timeoutMs ?? 30_000;
 
   return {
-    async review(prompt: string): Promise<CodexReviewOutcome> {
+    async review(prompt: string, loggerOverride?: AppLogger): Promise<CodexReviewOutcome> {
+      const logger = loggerOverride ?? input.logger;
       const startedAt = Date.now();
       const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "codex-review-"));
 
-      input.logger.debug(
+      logger.debug(
         {
+          component: "codex",
+          event: "codex.started",
           promptChars: prompt.length,
+          status: "started",
           timeoutMs,
         },
-        "Starting Codex review process",
+        "Codex review started",
       );
 
       try {
@@ -116,14 +120,18 @@ export function createCodexRunner(input: {
         const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
 
         if (timedOut) {
-          input.logger.error(
+          logger.error(
             {
+              component: "codex",
               durationMs: Date.now() - startedAt,
+              event: "codex.failed",
               promptChars: prompt.length,
+              reason: "timeout",
               stderrBytes: Buffer.byteLength(stderr, "utf8"),
+              status: "failed",
               timeoutMs,
             },
-            "Codex review timed out",
+            "Codex review failed",
           );
           return {
             ok: false,
@@ -132,13 +140,17 @@ export function createCodexRunner(input: {
         }
 
         if (exitCode !== 0) {
-          input.logger.warn(
+          logger.warn(
             {
+              component: "codex",
+              event: "codex.failed",
               exitCode,
               durationMs: Date.now() - startedAt,
+              reason: "non_zero_exit",
               stderrBytes: Buffer.byteLength(stderr, "utf8"),
+              status: "failed",
             },
-            "Codex returned a non-zero exit code",
+            "Codex review failed",
           );
           return {
             ok: false,
@@ -151,13 +163,17 @@ export function createCodexRunner(input: {
         const result = reviewResultSchema.safeParse(parsed);
 
         if (!result.success) {
-          input.logger.warn(
+          logger.warn(
             {
+              component: "codex",
               durationMs: Date.now() - startedAt,
+              event: "codex.failed",
               issues: result.error.issues,
               outputChars: rawOutput.length,
+              reason: "invalid_json",
+              status: "failed",
             },
-            "Codex returned invalid JSON",
+            "Codex review failed",
           );
           return {
             ok: false,
@@ -165,14 +181,17 @@ export function createCodexRunner(input: {
           };
         }
 
-        input.logger.info(
+        logger.info(
           {
+            component: "codex",
             decision: result.data.decision,
             durationMs: Date.now() - startedAt,
+            event: "codex.completed",
             findingCount: result.data.findings.length,
             score: result.data.score,
+            status: "completed",
           },
-          "Codex review completed successfully",
+          "Codex review completed",
         );
 
         return {
@@ -180,7 +199,16 @@ export function createCodexRunner(input: {
           result: result.data,
         };
       } catch (error) {
-        input.logger.error({ error }, "Failed to run Codex review");
+        logger.error(
+          {
+            component: "codex",
+            error,
+            event: "codex.failed",
+            reason: "process_error",
+            status: "failed",
+          },
+          "Codex review failed",
+        );
         return {
           ok: false,
           reason: "Codex review process could not be started or parsed safely.",

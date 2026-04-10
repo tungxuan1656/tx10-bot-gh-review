@@ -5,7 +5,7 @@ import { Webhooks } from "@octokit/webhooks";
 import { createServer } from "../src/http/create-server.js";
 
 describe("createServer", () => {
-  it("accepts valid pull_request webhooks", async () => {
+  it("accepts valid pull_request webhooks and forwards a normalized event", async () => {
     const secret = "super-secret";
     const webhooks = new Webhooks({ secret });
     const payload = JSON.stringify({
@@ -17,24 +17,32 @@ describe("createServer", () => {
         html_url: "https://github.com/acme/repo/pull/1",
         head: { sha: "head" },
         base: { sha: "base" },
+        requested_reviewers: [{ login: "review-bot" }],
       },
       requested_reviewer: {
         login: "review-bot",
       },
+      sender: {
+        login: "octocat",
+      },
     });
     const signature = await webhooks.sign(payload);
-    const handlePullRequestWebhook = vi.fn().mockResolvedValue(undefined);
+    const handlePullRequestEvent = vi.fn().mockResolvedValue(undefined);
     const logger = {
       debug: vi.fn(),
+      error: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
     };
 
     const app = createServer({
-      config: { githubWebhookSecret: secret },
+      config: {
+        githubBotLogin: "review-bot",
+        githubWebhookSecret: secret,
+      },
       logger: logger as never,
       reviewService: {
-        handlePullRequestWebhook,
+        handlePullRequestEvent,
       } as never,
     });
 
@@ -47,36 +55,61 @@ describe("createServer", () => {
       .send(payload);
 
     expect(response.status).toBe(202);
-    expect(handlePullRequestWebhook).toHaveBeenCalledWith(
+    expect(handlePullRequestEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "review_requested",
-        requested_reviewer: {
-          login: "review-bot",
-        },
+        actionKind: "review_requested",
+        deliveryId: "123",
+        headSha: "head",
+        owner: "acme",
+        pullNumber: 1,
+        repo: "repo",
+        requestedReviewerLogin: "review-bot",
+        senderLogin: "octocat",
       }),
     );
     expect(logger.info).toHaveBeenCalledWith(
-      { deliveryId: "123", eventName: "pull_request" },
-      "Received GitHub webhook",
+      expect.objectContaining({
+        action: "review_requested",
+        component: "http",
+        deliveryId: "123",
+        event: "webhook.received",
+        headSha: "head",
+        owner: "acme",
+        pullNumber: 1,
+        repo: "repo",
+        status: "received",
+      }),
+      "Webhook received",
     );
     expect(logger.info).toHaveBeenCalledWith(
-      { deliveryId: "123", eventName: "pull_request" },
-      "Dispatching pull_request webhook for processing",
+      expect.objectContaining({
+        action: "review_requested",
+        component: "http",
+        deliveryId: "123",
+        event: "webhook.verified",
+        status: "verified",
+      }),
+      "Webhook verified",
     );
   });
 
   it("rejects invalid signatures", async () => {
     const logger = {
       debug: vi.fn(),
+      error: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
     };
 
     const app = createServer({
-      config: { githubWebhookSecret: "secret" },
+      config: {
+        githubBotLogin: "review-bot",
+        githubWebhookSecret: "secret",
+      },
       logger: logger as never,
       reviewService: {
-        handlePullRequestWebhook: vi.fn(),
+        handlePullRequestEvent: vi.fn(),
       } as never,
     });
 
@@ -90,8 +123,14 @@ describe("createServer", () => {
 
     expect(response.status).toBe(401);
     expect(logger.warn).toHaveBeenCalledWith(
-      { deliveryId: "123", eventName: "pull_request" },
-      "Rejected webhook with invalid signature",
+      expect.objectContaining({
+        component: "http",
+        deliveryId: "123",
+        event: "webhook.rejected",
+        reason: "invalid_signature",
+        status: "rejected",
+      }),
+      "Webhook rejected",
     );
   });
 });

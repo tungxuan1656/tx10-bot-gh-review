@@ -1,15 +1,5 @@
 import { z } from "zod";
 
-export const supportedPullRequestActions = ["review_requested"] as const;
-
-export type SupportedPullRequestAction = (typeof supportedPullRequestActions)[number];
-
-export function isSupportedPullRequestAction(
-  action: string,
-): action is SupportedPullRequestAction {
-  return supportedPullRequestActions.includes(action as SupportedPullRequestAction);
-}
-
 export const findingSeveritySchema = z.enum([
   "critical",
   "high",
@@ -38,7 +28,7 @@ export type ReviewResult = z.infer<typeof reviewResultSchema>;
 export type FindingSeverity = z.infer<typeof findingSeveritySchema>;
 
 export type PullRequestContext = {
-  action: SupportedPullRequestAction;
+  action: string;
   installationId: number;
   owner: string;
   repo: string;
@@ -74,30 +64,6 @@ export type CodexReviewFailure = {
 export type CodexReviewOutcome = CodexReviewSuccess | CodexReviewFailure;
 
 export type ReviewEvent = "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
-
-export type PullRequestWebhookPayload = {
-  action: SupportedPullRequestAction;
-  repository: {
-    name: string;
-    owner: {
-      login: string;
-    };
-  };
-  pull_request: {
-    number: number;
-    title: string;
-    html_url: string;
-    head: {
-      sha: string;
-    };
-    base: {
-      sha: string;
-    };
-  };
-  requested_reviewer?: {
-    login: string;
-  } | null | undefined;
-};
 
 export type InlineReviewComment = {
   path: string;

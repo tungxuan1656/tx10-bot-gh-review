@@ -13,8 +13,8 @@ flowchart LR
 
 ## Core Components
 
-- **Webhook server** verifies `x-hub-signature-256`, accepts `pull_request` webhooks, and dispatches asynchronous review work.
-- **Review service** only runs when `action === review_requested` and `requested_reviewer.login` matches the configured bot login, then filters files, builds prompts, invokes Codex, applies deterministic decision logic, and publishes results.
+- **Webhook server** verifies `x-hub-signature-256`, normalizes `pull_request` webhook metadata, emits structured lifecycle logs, and dispatches asynchronous review work.
+- **Review service** routes every normalized `pull_request` action to one of three outcomes: `trigger_review`, `ignored`, or `cancel_requested`. Only `review_requested` for the configured bot starts a review; `synchronize` is audit-only, and `review_request_removed` best-effort cancels an in-flight run for the same head SHA.
 - **GitHub review platform** authenticates with the machine-user token, fetches changed files and head content, checks idempotency markers, and submits reviews or fallback comments.
 - **Codex runner** shells out to `codex exec` with a JSON Schema file so the final response is machine-validated before any GitHub action is taken.
 
@@ -29,7 +29,8 @@ sequenceDiagram
 
   Dev->>GitHub: Request review from bot account
   GitHub->>Bot: pull_request webhook
-  Bot->>Bot: Verify signature and confirm requested reviewer matches bot login
+  Bot->>Bot: Verify signature and normalize delivery metadata
+  Bot->>Bot: Route action to trigger_review / ignored / cancel_requested
   Bot->>GitHub: Fetch PR files and head content
   Bot->>Codex: Submit filtered diff + file content prompt
   Codex-->>Bot: Structured JSON review result
@@ -42,6 +43,8 @@ sequenceDiagram
 - The service is a single root TypeScript app instead of a monorepo split.
 - Webhook handling is asynchronous after signature verification so GitHub receives a fast `202 Accepted`.
 - Review execution is explicit: the bot only runs when the configured reviewer account is requested.
+- `synchronize` events are logged for audit but never auto-trigger a review.
+- `review_request_removed` requests a best-effort in-memory cancellation for an in-flight run on the same head SHA.
 - Codex output is trusted only after JSON Schema validation.
 - Idempotency uses a marker tied to `(repo, pull request, head SHA)` and checks both prior reviews and issue comments.
 - Invalid inline comment targets are moved into the top-level review body instead of failing the entire review.

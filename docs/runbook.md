@@ -41,6 +41,7 @@ Expected response:
 - Confirm `requested_reviewer.login` matched `GITHUB_BOT_LOGIN`
 - Confirm the PR includes reviewable file types with patch hunks
 - Check whether the head SHA already has a marker comment or review from a prior run
+- Check whether a later `review_request_removed` canceled the in-flight run before publish
 
 ### Inline findings were moved into the summary
 
@@ -60,24 +61,69 @@ Set `LOG_PRETTY=true` to force human-readable timeline logs, or keep `LOG_PRETTY
 
 Main lifecycle logs in order:
 
-1. `Received GitHub webhook`
-2. `Dispatching pull_request webhook for processing`
-3. `Accepted pull_request review request for processing`
-4. `Review run started`
-5. `Fetched changed files from pull request`
-6. `Hydrated reviewable files with patch and content`
-7. `Codex review completed with valid result` or `Codex review failed; publishing neutral failure comment`
-8. `Publishing pull request review`
-9. `Published pull request review` (or fallback mode log)
-10. `Review run completed`
+1. `Webhook received`
+2. `Webhook verified`
+3. `Webhook routed`
+4. `Review started`
+5. `Review idempotency checked`
+6. `Review files listed`
+7. `Review files hydrated`
+8. `Review Codex step completed` or `Review Codex step failed`
+9. `Review publish started`
+10. `Review published` or `Review publish fallback`
+11. `Review completed`
 
 Use `runKey` to trace one request end-to-end. The format is:
 
 `owner/repo#pullNumber@headSha`
 
+Each log line now also carries structured fields such as:
+
+- `component`
+- `event`
+- `status`
+- `deliveryId`
+- `action`
+- `owner`, `repo`, `pullNumber`, `headSha`
+- `requestedReviewerLogin`
+- `reason`
+- `runKey`
+
+## Pull Request Action Matrix
+
+| GitHub action | Routed status | Reason | Runtime behavior |
+| --- | --- | --- | --- |
+| `review_requested` for the bot | `trigger_review` | n/a | Start a review run |
+| `review_requested` for another reviewer | `ignored` | `reviewer_mismatch` | Do nothing |
+| `synchronize` | `ignored` | `manual_only_policy` | Audit only, no re-review |
+| `review_request_removed` for the bot | `cancel_requested` | `cancel_requested` | Best-effort cancel in-flight run |
+| Other pull request actions | `ignored` | `unsupported_action` | Do nothing |
+
+## Sample Outcomes
+
+### `review_requested`
+
+- `webhook.routed` with `status=trigger_review`
+- `review.started`
+- normal review lifecycle until `review.published`
+
+### `synchronize`
+
+- `webhook.routed` with `status=ignored`
+- `reason=manual_only_policy`
+- `botStillRequested=true|false` shows whether the bot is still listed in `pull_request.requested_reviewers`
+
+### `review_request_removed`
+
+- `webhook.routed` with `status=cancel_requested`
+- `review.cancel_requested`
+- `review.canceled` if the run stops before publish
+- `review.cancel_missed` if the review was already published or there was no in-flight run
+
 If a review fails, check these logs first:
 
-- `Idempotency check returned not found; continuing review run`
-- `Codex review timed out`
-- `Pull request review run failed`
-- `Failed to publish fallback failure comment`
+- `review.idempotency_checked`
+- `review.codex_failed`
+- `review.failed`
+- `review.cancel_requested`
+- `review.canceled`

@@ -186,7 +186,8 @@ sudo launchctl start com.cloudflare.cloudflared
 Behavior notes:
 
 - The bot only runs when the machine user is explicitly requested as a reviewer.
-- Pushing a new commit does not auto-trigger another review.
+- Pushing a new commit does not auto-trigger another review; `synchronize` is audit-only.
+- Removing the bot as a reviewer issues a best-effort cancellation request for the current in-flight run.
 - Ask GitHub to request review from the bot account again when you want a new pass.
 
 ## Troubleshooting
