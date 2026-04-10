@@ -10,6 +10,7 @@ const baseEnv = {
   GITHUB_WEBHOOK_SECRET: "secret",
   CODEX_BIN: "codex",
   LOG_LEVEL: "info",
+  LOG_PRETTY: "auto",
 } satisfies NodeJS.ProcessEnv;
 
 describe("loadConfig", () => {

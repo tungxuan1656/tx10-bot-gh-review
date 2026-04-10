@@ -24,12 +24,15 @@ describe("createServer", () => {
     });
     const signature = await webhooks.sign(payload);
     const handlePullRequestWebhook = vi.fn().mockResolvedValue(undefined);
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
 
     const app = createServer({
       config: { githubWebhookSecret: secret },
-      logger: {
-        debug: vi.fn(),
-      } as never,
+      logger: logger as never,
       reviewService: {
         handlePullRequestWebhook,
       } as never,
@@ -52,14 +55,26 @@ describe("createServer", () => {
         },
       }),
     );
+    expect(logger.info).toHaveBeenCalledWith(
+      { deliveryId: "123", eventName: "pull_request" },
+      "Received GitHub webhook",
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      { deliveryId: "123", eventName: "pull_request" },
+      "Dispatching pull_request webhook for processing",
+    );
   });
 
   it("rejects invalid signatures", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+
     const app = createServer({
       config: { githubWebhookSecret: "secret" },
-      logger: {
-        debug: vi.fn(),
-      } as never,
+      logger: logger as never,
       reviewService: {
         handlePullRequestWebhook: vi.fn(),
       } as never,
@@ -74,5 +89,9 @@ describe("createServer", () => {
       .send("{}");
 
     expect(response.status).toBe(401);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { deliveryId: "123", eventName: "pull_request" },
+      "Rejected webhook with invalid signature",
+    );
   });
 });

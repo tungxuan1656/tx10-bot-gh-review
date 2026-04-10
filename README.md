@@ -29,6 +29,7 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 | `GITHUB_WEBHOOK_SECRET` | Yes | Shared secret used to verify repository or organization webhooks |
 | `CODEX_BIN` | No | Codex CLI binary path. Defaults to `codex`. |
 | `LOG_LEVEL` | No | Pino log level. Defaults to `info`. |
+| `LOG_PRETTY` | No | Pretty-print logs (`auto`, `true`, or `false`). Defaults to `auto` (enabled in development TTY). |
 | `PORT` | No | HTTP port. Defaults to `43191`. |
 
 ## Local Development

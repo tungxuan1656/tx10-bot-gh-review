@@ -148,6 +148,18 @@ function isInvalidInlineReviewCommentError(error: unknown): boolean {
   });
 }
 
+function getErrorStatusCode(error: unknown): number | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const candidate = error as {
+    status?: unknown;
+  };
+
+  return typeof candidate.status === "number" ? candidate.status : null;
+}
+
 export class ReviewService {
   private readonly activeRuns = new Set<string>();
 
@@ -174,12 +186,27 @@ export class ReviewService {
       this.logger.debug(
         {
           action: parsed.data.action,
+          owner: parsed.data.repository.owner.login,
+          pullNumber: parsed.data.pull_request.number,
+          repo: parsed.data.repository.name,
           requestedReviewer: parsed.data.requested_reviewer?.login,
         },
         "Ignored pull_request event for a different reviewer",
       );
       return;
     }
+
+    this.logger.info(
+      {
+        action: parsed.data.action,
+        headSha: parsed.data.pull_request.head.sha,
+        owner: parsed.data.repository.owner.login,
+        pullNumber: parsed.data.pull_request.number,
+        repo: parsed.data.repository.name,
+        requestedReviewer: parsed.data.requested_reviewer?.login,
+      },
+      "Accepted pull_request review request for processing",
+    );
 
     await this.reviewPullRequest({
       ...parsed.data,
@@ -191,6 +218,19 @@ export class ReviewService {
     const context = toPullRequestContext(payload);
     const runKey = buildRunKey(context);
     const marker = buildReviewMarker(context.headSha);
+    const startedAt = Date.now();
+
+    this.logger.info(
+      {
+        action: context.action,
+        headSha: context.headSha,
+        owner: context.owner,
+        pullNumber: context.pullNumber,
+        repo: context.repo,
+        runKey,
+      },
+      "Review run started",
+    );
 
     if (this.activeRuns.has(runKey)) {
       this.logger.info({ runKey }, "Skipped duplicate in-flight review run");
@@ -200,13 +240,49 @@ export class ReviewService {
     this.activeRuns.add(runKey);
 
     try {
-      if (await this.github.hasPublishedResult(context, marker)) {
+      let hasPublishedResult = false;
+
+      this.logger.debug({ runKey }, "Checking existing published review marker");
+
+      try {
+        hasPublishedResult = await this.github.hasPublishedResult(context, marker);
+      } catch (error) {
+        const status = getErrorStatusCode(error);
+
+        if (status === 404) {
+          this.logger.warn(
+            {
+              error,
+              owner: context.owner,
+              pullNumber: context.pullNumber,
+              repo: context.repo,
+              runKey,
+              status,
+            },
+            "Idempotency check returned not found; continuing review run",
+          );
+        } else {
+          throw error;
+        }
+      }
+
+      if (hasPublishedResult) {
         this.logger.info({ runKey }, "Skipped already published review result");
         return;
       }
 
+      this.logger.debug({ runKey }, "No published review marker found; continuing pipeline");
+
       const changedFiles = await this.github.listPullRequestFiles(context);
-      const reviewableFiles = await this.hydrateReviewableFiles(context, changedFiles);
+      this.logger.info(
+        {
+          changedFileCount: changedFiles.length,
+          runKey,
+        },
+        "Fetched changed files from pull request",
+      );
+
+      const reviewableFiles = await this.hydrateReviewableFiles(context, changedFiles, runKey);
 
       if (reviewableFiles.length === 0) {
         this.logger.info(
@@ -225,9 +301,26 @@ export class ReviewService {
         files: reviewableFiles,
       });
 
+      this.logger.debug(
+        {
+          promptChars: prompt.length,
+          reviewableFileCount: reviewableFiles.length,
+          runKey,
+        },
+        "Built review prompt for Codex",
+      );
+
       const outcome = await this.codex.review(prompt);
 
       if (!outcome.ok) {
+        this.logger.warn(
+          {
+            reason: outcome.reason,
+            runKey,
+          },
+          "Codex review failed; publishing neutral failure comment",
+        );
+
         await this.github.publishFailureComment(
           context,
           buildFailureComment({
@@ -238,10 +331,30 @@ export class ReviewService {
         return;
       }
 
+      this.logger.info(
+        {
+          decision: outcome.result.decision,
+          findingCount: outcome.result.findings.length,
+          runKey,
+          score: outcome.result.score,
+        },
+        "Codex review completed with valid result",
+      );
+
       const event = determineReviewEvent(outcome.result.findings);
       const { comments, overflowFindings } = separateInlineAndOverflowFindings(
         outcome.result.findings,
         reviewableFiles,
+      );
+
+      this.logger.info(
+        {
+          event,
+          inlineCommentCount: comments.length,
+          overflowFindingCount: overflowFindings.length,
+          runKey,
+        },
+        "Publishing pull request review",
       );
 
       const body = buildReviewBody({
@@ -266,6 +379,14 @@ export class ReviewService {
           event,
           comments,
         });
+        this.logger.info(
+          {
+            event,
+            inlineCommentCount: comments.length,
+            runKey,
+          },
+          "Published pull request review",
+        );
       } catch (error) {
         if (!comments.length || !isInvalidInlineReviewCommentError(error)) {
           throw error;
@@ -286,26 +407,64 @@ export class ReviewService {
           event,
           comments: [],
         });
+        this.logger.info(
+          {
+            event,
+            fallbackMode: true,
+            runKey,
+          },
+          "Published pull request review without inline comments",
+        );
       }
     } catch (error) {
       this.logger.error({ error, runKey }, "Pull request review run failed");
-      await this.github.publishFailureComment(
-        context,
-        buildFailureComment({
-          headSha: context.headSha,
-          reason: "The review pipeline failed before it could submit a review.",
-        }),
-      );
+
+      try {
+        await this.github.publishFailureComment(
+          context,
+          buildFailureComment({
+            headSha: context.headSha,
+            reason: "The review pipeline failed before it could submit a review.",
+          }),
+        );
+      } catch (failureCommentError) {
+        this.logger.error(
+          {
+            failureCommentError,
+            originalError: error,
+            runKey,
+          },
+          "Failed to publish fallback failure comment",
+        );
+      }
     } finally {
       this.activeRuns.delete(runKey);
+      this.logger.info(
+        {
+          durationMs: Date.now() - startedAt,
+          runKey,
+        },
+        "Review run completed",
+      );
     }
   }
 
   private async hydrateReviewableFiles(
     context: PullRequestContext,
     changedFiles: GitHubPullRequestFile[],
+    runKey: string,
   ): Promise<ReviewableFile[]> {
     const filteredFiles = filterReviewableFiles(changedFiles);
+
+    this.logger.debug(
+      {
+        changedFileCount: changedFiles.length,
+        filteredFileCount: filteredFiles.length,
+        runKey,
+      },
+      "Filtered pull request files for review",
+    );
+
     const hydratedFiles = await Promise.all(
       filteredFiles.map(async (file) => {
         try {
@@ -321,12 +480,30 @@ export class ReviewService {
             content,
           };
         } catch (error) {
-          this.logger.warn({ error, path: file.path }, "Skipping unreadable pull request file");
+          this.logger.warn(
+            {
+              error,
+              path: file.path,
+              runKey,
+            },
+            "Skipping unreadable pull request file",
+          );
           return null;
         }
       }),
     );
 
-    return hydratedFiles.filter((file): file is ReviewableFile => file !== null);
+    const reviewableFiles = hydratedFiles.filter((file): file is ReviewableFile => file !== null);
+
+    this.logger.info(
+      {
+        reviewableFileCount: reviewableFiles.length,
+        runKey,
+        skippedFileCount: hydratedFiles.length - reviewableFiles.length,
+      },
+      "Hydrated reviewable files with patch and content",
+    );
+
+    return reviewableFiles;
   }
 }

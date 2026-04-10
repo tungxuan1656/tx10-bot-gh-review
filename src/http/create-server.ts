@@ -34,28 +34,43 @@ export function createServer(input: {
         : JSON.stringify(request.body ?? {});
 
       if (!eventName || !signature || !deliveryId) {
+        input.logger.warn(
+          {
+            hasDeliveryId: Boolean(deliveryId),
+            hasEventName: Boolean(eventName),
+            hasSignature: Boolean(signature),
+          },
+          "Rejected webhook with missing required GitHub headers",
+        );
         response.status(400).json({ error: "Missing GitHub webhook headers." });
         return;
       }
 
+      input.logger.info({ deliveryId, eventName }, "Received GitHub webhook");
+
       const isValid = await webhooks.verify(body, signature);
       if (!isValid) {
+        input.logger.warn({ deliveryId, eventName }, "Rejected webhook with invalid signature");
         response.status(401).json({ error: "Invalid webhook signature." });
         return;
       }
+
+      input.logger.debug({ deliveryId, eventName }, "Verified GitHub webhook signature");
 
       let payload: unknown;
       try {
         payload = JSON.parse(body);
       } catch {
+        input.logger.warn({ deliveryId, eventName }, "Rejected webhook with invalid JSON body");
         response.status(400).json({ error: "Invalid JSON payload." });
         return;
       }
 
       if (eventName === "pull_request") {
+        input.logger.info({ deliveryId, eventName }, "Dispatching pull_request webhook for processing");
         void input.reviewService.handlePullRequestWebhook(payload);
       } else {
-        input.logger.debug({ eventName }, "Ignored unsupported webhook event");
+        input.logger.debug({ deliveryId, eventName }, "Ignored unsupported webhook event");
       }
 
       response.status(202).json({ status: "accepted" });

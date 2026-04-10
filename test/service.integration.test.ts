@@ -88,6 +88,71 @@ describe("ReviewService", () => {
     expect(publishFailureComment).not.toHaveBeenCalled();
   });
 
+  it("emits lifecycle logs for a successful review run", async () => {
+    const hasPublishedResult = vi.fn().mockResolvedValue(false);
+    const listPullRequestFiles = vi.fn().mockResolvedValue([
+      {
+        path: "src/app.ts",
+        status: "modified",
+        patch: "@@ -1 +1 @@\n-console.log('a')\n+console.log('b')",
+      },
+    ]);
+    const getFileContent = vi.fn().mockResolvedValue("console.log('b');");
+    const publishReview = vi.fn().mockResolvedValue(undefined);
+    const publishFailureComment = vi.fn().mockResolvedValue(undefined);
+    const github: ReviewPlatform = {
+      hasPublishedResult,
+      listPullRequestFiles,
+      getFileContent,
+      publishReview,
+      publishFailureComment,
+    };
+
+    const codex: CodexRunner = {
+      review: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          summary: "No issues.",
+          score: 9,
+          decision: "approve",
+          findings: [],
+        },
+      }),
+    };
+
+    const logger: AppLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    } as unknown as AppLogger;
+
+    const service = new ReviewService(github, codex, logger, "review-bot");
+    await service.handlePullRequestWebhook(createPullRequestPayload());
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headSha: "abc123",
+        owner: "acme",
+        pullNumber: 42,
+        repo: "repo",
+      }),
+      "Accepted pull_request review request for processing",
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runKey: "acme/repo#42@abc123",
+      }),
+      "Review run started",
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runKey: "acme/repo#42@abc123",
+      }),
+      "Review run completed",
+    );
+  });
+
   it("publishes a neutral failure comment when Codex fails", async () => {
     const hasPublishedResult = vi.fn().mockResolvedValue(false);
     const listPullRequestFiles = vi.fn().mockResolvedValue([
@@ -146,6 +211,120 @@ describe("ReviewService", () => {
 
     expect(listPullRequestFiles).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
+  });
+
+  it("continues review when idempotency check returns not found", async () => {
+    const hasPublishedResult = vi.fn().mockRejectedValue({
+      status: 404,
+      message: "Not Found",
+    });
+    const listPullRequestFiles = vi.fn().mockResolvedValue([
+      {
+        path: "src/app.ts",
+        status: "modified",
+        patch: "@@ -1 +1 @@\n-console.log('a')\n+console.log('b')",
+      },
+    ]);
+    const getFileContent = vi.fn().mockResolvedValue("console.log('b');");
+    const publishReview = vi.fn().mockResolvedValue(undefined);
+    const publishFailureComment = vi.fn().mockResolvedValue(undefined);
+    const github: ReviewPlatform = {
+      hasPublishedResult,
+      listPullRequestFiles,
+      getFileContent,
+      publishReview,
+      publishFailureComment,
+    };
+
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: {
+        summary: "No actionable issues.",
+        score: 9,
+        decision: "approve",
+        findings: [],
+      },
+    });
+    const codex: CodexRunner = {
+      review,
+    };
+
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
+    await service.handlePullRequestWebhook(createPullRequestPayload());
+
+    expect(listPullRequestFiles).toHaveBeenCalledTimes(1);
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(publishReview).toHaveBeenCalledTimes(1);
+    expect(publishFailureComment).not.toHaveBeenCalled();
+  });
+
+  it("publishes neutral failure comment when idempotency check is forbidden", async () => {
+    const hasPublishedResult = vi.fn().mockRejectedValue({
+      status: 403,
+      message: "Forbidden",
+    });
+    const listPullRequestFiles = vi.fn();
+    const getFileContent = vi.fn();
+    const publishReview = vi.fn();
+    const publishFailureComment = vi.fn().mockResolvedValue(undefined);
+    const github: ReviewPlatform = {
+      hasPublishedResult,
+      listPullRequestFiles,
+      getFileContent,
+      publishReview,
+      publishFailureComment,
+    };
+
+    const review = vi.fn();
+    const codex: CodexRunner = {
+      review,
+    };
+
+    const service = new ReviewService(github, codex, createLoggerStub(), "review-bot");
+    await service.handlePullRequestWebhook(createPullRequestPayload());
+
+    expect(listPullRequestFiles).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+    expect(publishReview).not.toHaveBeenCalled();
+    expect(publishFailureComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not throw when fallback failure comment publishing also fails", async () => {
+    const hasPublishedResult = vi.fn().mockRejectedValue({
+      status: 403,
+      message: "Forbidden",
+    });
+    const listPullRequestFiles = vi.fn();
+    const getFileContent = vi.fn();
+    const publishReview = vi.fn();
+    const publishFailureComment = vi.fn().mockRejectedValue(new Error("comment publish failed"));
+    const github: ReviewPlatform = {
+      hasPublishedResult,
+      listPullRequestFiles,
+      getFileContent,
+      publishReview,
+      publishFailureComment,
+    };
+
+    const review = vi.fn();
+    const codex: CodexRunner = {
+      review,
+    };
+
+    const error = vi.fn();
+    const logger: AppLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error,
+      debug: vi.fn(),
+    } as unknown as AppLogger;
+
+    const service = new ReviewService(github, codex, logger, "review-bot");
+
+    await expect(service.handlePullRequestWebhook(createPullRequestPayload())).resolves.toBeUndefined();
+
+    expect(publishFailureComment).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledTimes(2);
   });
 
   it("skips unreadable files and still reviews the remaining diff", async () => {

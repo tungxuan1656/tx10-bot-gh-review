@@ -10,6 +10,8 @@ const logLevelSchema = z.enum([
   "silent",
 ]);
 
+const logPrettySchema = z.enum(["auto", "true", "false"]);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(43191),
@@ -18,6 +20,7 @@ const envSchema = z.object({
   GITHUB_WEBHOOK_SECRET: z.string().min(1, "GITHUB_WEBHOOK_SECRET is required"),
   CODEX_BIN: z.string().min(1).default("codex"),
   LOG_LEVEL: logLevelSchema.default("info"),
+  LOG_PRETTY: logPrettySchema.default("auto"),
 });
 
 export type AppConfig = {
@@ -28,6 +31,7 @@ export type AppConfig = {
   githubWebhookSecret: string;
   codexBin: string;
   logLevel: z.infer<typeof logLevelSchema>;
+  logPretty: z.infer<typeof logPrettySchema>;
 };
 
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -41,5 +45,6 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     githubWebhookSecret: parsed.GITHUB_WEBHOOK_SECRET,
     codexBin: parsed.CODEX_BIN,
     logLevel: parsed.LOG_LEVEL,
+    logPretty: parsed.LOG_PRETTY,
   };
 }

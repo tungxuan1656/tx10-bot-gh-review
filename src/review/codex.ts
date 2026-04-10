@@ -52,7 +52,17 @@ export function createCodexRunner(input: {
 
   return {
     async review(prompt: string): Promise<CodexReviewOutcome> {
+      const startedAt = Date.now();
       const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "codex-review-"));
+
+      input.logger.debug(
+        {
+          promptChars: prompt.length,
+          timeoutMs,
+        },
+        "Starting Codex review process",
+      );
+
       try {
         const schemaPath = path.join(tempDirectory, "schema.json");
         const outputPath = path.join(tempDirectory, "result.json");
@@ -106,6 +116,15 @@ export function createCodexRunner(input: {
         const stdout = Buffer.concat(stdoutChunks).toString("utf8").trim();
 
         if (timedOut) {
+          input.logger.error(
+            {
+              durationMs: Date.now() - startedAt,
+              promptChars: prompt.length,
+              stderrBytes: Buffer.byteLength(stderr, "utf8"),
+              timeoutMs,
+            },
+            "Codex review timed out",
+          );
           return {
             ok: false,
             reason: `Codex timed out after ${timeoutMs}ms.`,
@@ -116,7 +135,8 @@ export function createCodexRunner(input: {
           input.logger.warn(
             {
               exitCode,
-              stderr,
+              durationMs: Date.now() - startedAt,
+              stderrBytes: Buffer.byteLength(stderr, "utf8"),
             },
             "Codex returned a non-zero exit code",
           );
@@ -131,12 +151,29 @@ export function createCodexRunner(input: {
         const result = reviewResultSchema.safeParse(parsed);
 
         if (!result.success) {
-          input.logger.warn({ issues: result.error.issues }, "Codex returned invalid JSON");
+          input.logger.warn(
+            {
+              durationMs: Date.now() - startedAt,
+              issues: result.error.issues,
+              outputChars: rawOutput.length,
+            },
+            "Codex returned invalid JSON",
+          );
           return {
             ok: false,
             reason: "Codex returned JSON that did not match the review schema.",
           };
         }
+
+        input.logger.info(
+          {
+            decision: result.data.decision,
+            durationMs: Date.now() - startedAt,
+            findingCount: result.data.findings.length,
+            score: result.data.score,
+          },
+          "Codex review completed successfully",
+        );
 
         return {
           ok: true,
