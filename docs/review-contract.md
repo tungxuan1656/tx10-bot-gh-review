@@ -25,6 +25,7 @@ The Codex prompt contract keeps the review pipeline deterministic. The bot asks 
 
 ## Prompt Rules
 
+- Build the prompt from the exact temporary workspace diff between `baseSha` and `headSha`
 - JSON only
 - No markdown fences
 - No stylistic-only findings

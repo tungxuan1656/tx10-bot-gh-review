@@ -1,6 +1,7 @@
 import type { ReviewableFile } from "./types.js";
 
 const maxFiles = 20;
+const maxDiffCharacters = 20_000;
 const maxPatchCharacters = 4_000;
 const maxContentCharacters = 6_000;
 
@@ -18,6 +19,7 @@ export function buildReviewPrompt(input: {
   pullNumber: number;
   title: string;
   headSha: string;
+  diff: string;
   files: ReviewableFile[];
 }): string {
   const selectedFiles = input.files.slice(0, maxFiles);
@@ -58,6 +60,9 @@ export function buildReviewPrompt(input: {
     `Title: ${input.title}`,
     `Head SHA: ${input.headSha}`,
     `Reviewable files included: ${selectedFiles.length}/${input.files.length}`,
+    "",
+    "Unified diff (context=5):",
+    truncate(input.diff, maxDiffCharacters),
     "",
     "Required JSON shape:",
     JSON.stringify(

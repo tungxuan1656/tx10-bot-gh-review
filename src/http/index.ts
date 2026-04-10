@@ -3,6 +3,7 @@ import { createLogger } from "../logger.js";
 import { createCodexRunner } from "../review/codex.js";
 import { createGitHubReviewPlatform } from "../review/github-platform.js";
 import { ReviewService } from "../review/service.js";
+import { createTemporaryReviewWorkspaceManager } from "../review/workspace.js";
 import { createServer } from "./create-server.js";
 
 const config = loadConfig();
@@ -13,7 +14,17 @@ const codex = createCodexRunner({
   bin: config.codexBin,
   logger,
 });
-const reviewService = new ReviewService(github, codex, logger, config.githubBotLogin);
+const workspaceManager = createTemporaryReviewWorkspaceManager({
+  githubToken: config.githubToken,
+  logger,
+});
+const reviewService = new ReviewService(
+  github,
+  codex,
+  workspaceManager,
+  logger,
+  config.githubBotLogin,
+);
 const app = createServer({
   config,
   logger,

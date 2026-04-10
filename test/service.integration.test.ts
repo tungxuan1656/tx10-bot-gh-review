@@ -5,6 +5,7 @@ import type { CodexRunner } from "../src/review/codex.js";
 import type { ReviewPlatform } from "../src/review/github-platform.js";
 import type { AppLogger } from "../src/logger.js";
 import type { NormalizedPullRequestEvent } from "../src/review/webhook-event.js";
+import type { ReviewWorkspaceManager } from "../src/review/workspace.js";
 
 function createLoggerStub(): AppLogger {
   return {
@@ -36,23 +37,21 @@ function createPullRequestEvent(
     requestedReviewerLogins: ["review-bot"],
     senderLogin: "octocat",
     title: "Add a review flow",
+    headRef: "feature/review-flow",
+    headCloneUrl: "https://github.com/acme/repo.git",
+    baseRef: "main",
+    baseCloneUrl: "https://github.com/acme/repo.git",
     ...overrides,
   };
 }
 
 function createGitHubPlatform(overrides: Partial<ReviewPlatform> = {}) {
   const baseMocks = {
-    getFileContent: vi.fn().mockResolvedValue("console.log('b');"),
     hasPublishedResult: vi.fn().mockResolvedValue(false),
-    listPullRequestFiles: vi.fn().mockResolvedValue([
-      {
-        path: "src/app.ts",
-        status: "modified",
-        patch: "@@ -1 +1 @@\n-console.log('a')\n+console.log('b')",
-      },
-    ]),
     publishFailureComment: vi.fn().mockResolvedValue(undefined),
     publishReview: vi.fn().mockResolvedValue(undefined),
+    getFileContent: vi.fn(),
+    listPullRequestFiles: vi.fn(),
   };
   const mocks = {
     ...baseMocks,
@@ -62,6 +61,58 @@ function createGitHubPlatform(overrides: Partial<ReviewPlatform> = {}) {
   return {
     mocks,
     platform: mocks satisfies ReviewPlatform,
+  };
+}
+
+function createWorkspaceManager(
+  overrides: Partial<ReviewWorkspaceManager> = {},
+): {
+  manager: ReviewWorkspaceManager;
+  mocks: {
+    cleanup: ReturnType<typeof vi.fn>;
+    prepareWorkspace: ReturnType<typeof vi.fn>;
+  };
+} {
+  const cleanup = vi.fn().mockResolvedValue(undefined);
+  const prepareWorkspaceMock = vi.fn(
+    overrides.prepareWorkspace ??
+      (() =>
+        Promise.resolve({
+          cleanup,
+          diff: [
+            "diff --git a/src/app.ts b/src/app.ts",
+            "--- a/src/app.ts",
+            "+++ b/src/app.ts",
+            "@@ -1 +1 @@",
+            "-console.log('a')",
+            "+console.log('b')",
+          ].join("\n"),
+          reviewableFiles: [
+            {
+              path: "src/app.ts",
+              patch: "@@ -1 +1 @@\n-console.log('a')\n+console.log('b')",
+              content: "console.log('b');\n",
+            },
+          ],
+          workingDirectory: "/tmp/codex-review-workspace",
+        })),
+  );
+  const mocks: {
+    cleanup: ReturnType<typeof vi.fn>;
+    prepareWorkspace: ReturnType<typeof vi.fn>;
+  } = {
+    cleanup,
+    prepareWorkspace: prepareWorkspaceMock,
+  };
+  const manager: ReviewWorkspaceManager = {
+    prepareWorkspace(context, loggerOverride) {
+      return prepareWorkspaceMock(context, loggerOverride);
+    },
+  };
+
+  return {
+    manager,
+    mocks,
   };
 }
 
@@ -101,19 +152,28 @@ function createDeferred<T>() {
 describe("ReviewService", () => {
   it("publishes a review for a valid Codex result", async () => {
     const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
     const codex: CodexRunner = {
       review: createSuccessfulCodexReview(),
     };
 
-    const service = new ReviewService(github.platform, codex, createLoggerStub(), "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
     await service.handlePullRequestEvent(createPullRequestEvent());
 
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1);
     expect(github.mocks.publishFailureComment).not.toHaveBeenCalled();
+    expect(workspace.mocks.cleanup).toHaveBeenCalledTimes(1);
   });
 
   it("emits lifecycle logs for a successful review run", async () => {
     const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
     const codex: CodexRunner = {
       review: vi.fn().mockResolvedValue({
         ok: true,
@@ -127,7 +187,13 @@ describe("ReviewService", () => {
     };
     const logger = createLoggerStub();
 
-    const service = new ReviewService(github.platform, codex, logger, "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      logger,
+      "review-bot",
+    );
     await service.handlePullRequestEvent(createPullRequestEvent());
 
     expect(logger.info).toHaveBeenCalledWith(
@@ -165,6 +231,7 @@ describe("ReviewService", () => {
 
   it("publishes a neutral failure comment when Codex fails", async () => {
     const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
     const codex: CodexRunner = {
       review: vi.fn().mockResolvedValue({
         ok: false,
@@ -172,7 +239,13 @@ describe("ReviewService", () => {
       }),
     };
 
-    const service = new ReviewService(github.platform, codex, createLoggerStub(), "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
     await service.handlePullRequestEvent(createPullRequestEvent());
 
     expect(github.mocks.publishReview).not.toHaveBeenCalled();
@@ -182,17 +255,23 @@ describe("ReviewService", () => {
   it("skips duplicate head SHA results", async () => {
     const github = createGitHubPlatform({
       hasPublishedResult: vi.fn().mockResolvedValue(true),
-      listPullRequestFiles: vi.fn(),
     });
+    const workspace = createWorkspaceManager();
     const review = vi.fn();
     const codex: CodexRunner = {
       review,
     };
 
-    const service = new ReviewService(github.platform, codex, createLoggerStub(), "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
     await service.handlePullRequestEvent(createPullRequestEvent());
 
-    expect(github.mocks.listPullRequestFiles).not.toHaveBeenCalled();
+    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
   });
 
@@ -203,6 +282,7 @@ describe("ReviewService", () => {
         message: "Not Found",
       }),
     });
+    const workspace = createWorkspaceManager();
     const review = vi.fn().mockResolvedValue({
       ok: true,
       result: {
@@ -216,10 +296,16 @@ describe("ReviewService", () => {
       review,
     };
 
-    const service = new ReviewService(github.platform, codex, createLoggerStub(), "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
     await service.handlePullRequestEvent(createPullRequestEvent());
 
-    expect(github.mocks.listPullRequestFiles).toHaveBeenCalledTimes(1);
+    expect(workspace.mocks.prepareWorkspace).toHaveBeenCalledTimes(1);
     expect(review).toHaveBeenCalledTimes(1);
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1);
     expect(github.mocks.publishFailureComment).not.toHaveBeenCalled();
@@ -231,17 +317,23 @@ describe("ReviewService", () => {
         status: 403,
         message: "Forbidden",
       }),
-      listPullRequestFiles: vi.fn(),
     });
+    const workspace = createWorkspaceManager();
     const review = vi.fn();
     const codex: CodexRunner = {
       review,
     };
 
-    const service = new ReviewService(github.platform, codex, createLoggerStub(), "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
     await service.handlePullRequestEvent(createPullRequestEvent());
 
-    expect(github.mocks.listPullRequestFiles).not.toHaveBeenCalled();
+    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(github.mocks.publishReview).not.toHaveBeenCalled();
     expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(1);
@@ -253,16 +345,22 @@ describe("ReviewService", () => {
         status: 403,
         message: "Forbidden",
       }),
-      listPullRequestFiles: vi.fn(),
       publishFailureComment: vi.fn().mockRejectedValue(new Error("comment publish failed")),
     });
+    const workspace = createWorkspaceManager();
     const review = vi.fn();
     const codex: CodexRunner = {
       review,
     };
     const logger = createLoggerStub();
 
-    const service = new ReviewService(github.platform, codex, logger, "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      logger,
+      "review-bot",
+    );
 
     await expect(
       service.handlePullRequestEvent(createPullRequestEvent()),
@@ -272,25 +370,9 @@ describe("ReviewService", () => {
     expect(logger.error).toHaveBeenCalledTimes(2);
   });
 
-  it("skips unreadable files and still reviews the remaining diff", async () => {
-    const github = createGitHubPlatform({
-      getFileContent: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("not found"))
-        .mockResolvedValueOnce("export const value = 'new';"),
-      listPullRequestFiles: vi.fn().mockResolvedValue([
-        {
-          path: "src/bad.ts",
-          status: "modified",
-          patch: "@@ -1 +1 @@\n-a\n+b",
-        },
-        {
-          path: "src/good.ts",
-          status: "modified",
-          patch: "@@ -1 +1 @@\n-old\n+new",
-        },
-      ]),
-    });
+  it("passes the temporary workspace directory and unified diff to Codex", async () => {
+    const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
     const review = vi.fn().mockResolvedValue({
       ok: true,
       result: {
@@ -302,10 +384,23 @@ describe("ReviewService", () => {
     });
     const codex: CodexRunner = { review };
 
-    const service = new ReviewService(github.platform, codex, createLoggerStub(), "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
     await service.handlePullRequestEvent(createPullRequestEvent());
 
+    const reviewInput = review.mock.calls[0]?.[0] as {
+      prompt: string;
+      workingDirectory: string;
+    };
     expect(review).toHaveBeenCalledTimes(1);
+    expect(reviewInput.workingDirectory).toBe("/tmp/codex-review-workspace");
+    expect(reviewInput.prompt).toContain("Unified diff (context=5):");
+    expect(reviewInput.prompt).toContain("diff --git a/src/app.ts b/src/app.ts");
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1);
     expect(github.mocks.publishFailureComment).not.toHaveBeenCalled();
   });
@@ -328,11 +423,18 @@ describe("ReviewService", () => {
     const github = createGitHubPlatform({
       publishReview: publishReviewMock,
     });
+    const workspace = createWorkspaceManager();
     const codex: CodexRunner = {
       review: createSuccessfulCodexReview(),
     };
 
-    const service = new ReviewService(github.platform, codex, createLoggerStub(), "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
     await service.handlePullRequestEvent(createPullRequestEvent());
 
     const firstPublishInput = publishReviewMock.mock.calls[0]?.[0] as {
@@ -354,13 +456,19 @@ describe("ReviewService", () => {
 
   it("ignores review requests for a different reviewer", async () => {
     const github = createGitHubPlatform({
-      listPullRequestFiles: vi.fn(),
     });
+    const workspace = createWorkspaceManager();
     const review = vi.fn();
     const codex: CodexRunner = { review };
     const logger = createLoggerStub();
 
-    const service = new ReviewService(github.platform, codex, logger, "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      logger,
+      "review-bot",
+    );
     await service.handlePullRequestEvent(
       createPullRequestEvent({
         requestedReviewerLogin: "someone-else",
@@ -368,7 +476,7 @@ describe("ReviewService", () => {
       }),
     );
 
-    expect(github.mocks.listPullRequestFiles).not.toHaveBeenCalled();
+    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(github.mocks.publishReview).not.toHaveBeenCalled();
     expect(github.mocks.publishFailureComment).not.toHaveBeenCalled();
@@ -384,13 +492,19 @@ describe("ReviewService", () => {
 
   it("ignores synchronize events under the manual-only policy and logs botStillRequested", async () => {
     const github = createGitHubPlatform({
-      listPullRequestFiles: vi.fn(),
     });
+    const workspace = createWorkspaceManager();
     const review = vi.fn();
     const codex: CodexRunner = { review };
     const logger = createLoggerStub();
 
-    const service = new ReviewService(github.platform, codex, logger, "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      logger,
+      "review-bot",
+    );
     await service.handlePullRequestEvent(
       createPullRequestEvent({
         action: "synchronize",
@@ -402,7 +516,7 @@ describe("ReviewService", () => {
       }),
     );
 
-    expect(github.mocks.listPullRequestFiles).not.toHaveBeenCalled();
+    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -419,13 +533,19 @@ describe("ReviewService", () => {
     const hasPublishedResultDeferred = createDeferred<boolean>();
     const github = createGitHubPlatform({
       hasPublishedResult: vi.fn().mockImplementation(() => hasPublishedResultDeferred.promise),
-      listPullRequestFiles: vi.fn(),
       publishReview: vi.fn(),
     });
+    const workspace = createWorkspaceManager();
     const review = vi.fn();
     const codex: CodexRunner = { review };
     const logger = createLoggerStub();
-    const service = new ReviewService(github.platform, codex, logger, "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      logger,
+      "review-bot",
+    );
 
     const runPromise = service.handlePullRequestEvent(createPullRequestEvent());
     await Promise.resolve();
@@ -441,7 +561,7 @@ describe("ReviewService", () => {
     hasPublishedResultDeferred.resolve(false);
     await runPromise;
 
-    expect(github.mocks.listPullRequestFiles).not.toHaveBeenCalled();
+    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(github.mocks.publishReview).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
@@ -466,13 +586,19 @@ describe("ReviewService", () => {
 
   it("ignores unsupported pull_request actions", async () => {
     const github = createGitHubPlatform({
-      listPullRequestFiles: vi.fn(),
     });
+    const workspace = createWorkspaceManager();
     const review = vi.fn();
     const codex: CodexRunner = { review };
     const logger = createLoggerStub();
 
-    const service = new ReviewService(github.platform, codex, logger, "review-bot");
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      logger,
+      "review-bot",
+    );
     await service.handlePullRequestEvent(
       createPullRequestEvent({
         action: "opened",
@@ -480,7 +606,7 @@ describe("ReviewService", () => {
       }),
     );
 
-    expect(github.mocks.listPullRequestFiles).not.toHaveBeenCalled();
+    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({

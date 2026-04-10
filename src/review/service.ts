@@ -1,5 +1,4 @@
 import { determineReviewEvent } from "./decision.js";
-import { filterReviewableFiles } from "./filter-files.js";
 import { isCommentableRightSideLine } from "./patch.js";
 import { buildReviewPrompt } from "./prompt.js";
 import { buildFailureComment, buildReviewBody, buildReviewMarker } from "./summary.js";
@@ -9,12 +8,12 @@ import type { CodexRunner } from "./codex.js";
 import type { ReviewPlatform } from "./github-platform.js";
 import type { NormalizedPullRequestEvent } from "./webhook-event.js";
 import type {
-  GitHubPullRequestFile,
   InlineReviewComment,
   PullRequestContext,
   ReviewFinding,
   ReviewableFile,
 } from "./types.js";
+import type { ReviewWorkspaceManager } from "./workspace.js";
 
 type RoutedPullRequestEvent =
   | {
@@ -39,7 +38,11 @@ function toPullRequestContext(event: NormalizedPullRequestEvent): PullRequestCon
     title: event.title,
     htmlUrl: event.htmlUrl,
     headSha: event.headSha,
+    headRef: event.headRef,
+    headCloneUrl: event.headCloneUrl,
     baseSha: event.baseSha,
+    baseRef: event.baseRef,
+    baseCloneUrl: event.baseCloneUrl,
   };
 }
 
@@ -151,6 +154,7 @@ export class ReviewService {
   constructor(
     private readonly github: ReviewPlatform,
     private readonly codex: CodexRunner,
+    private readonly workspaceManager: ReviewWorkspaceManager,
     private readonly logger: AppLogger,
     private readonly botLogin: string,
   ) {}
@@ -358,189 +362,197 @@ export class ReviewService {
         return;
       }
 
-      const changedFiles = await this.github.listPullRequestFiles(context);
-      runLogger.info(
-        {
-          changedFileCount: changedFiles.length,
-          event: "review.files_listed",
-          status: "completed",
-        },
-        "Review files listed",
-      );
-
-      if (this.shouldStopForCancellation(runLogger, runKey, "after_list_files")) {
-        return;
-      }
-
-      const reviewableFiles = await this.hydrateReviewableFiles(context, changedFiles, runLogger);
-
-      if (reviewableFiles.length === 0) {
-        runLogger.info(
-          {
-            changedFileCount: changedFiles.length,
-            event: "review.completed",
-            reason: "no_reviewable_files",
-            status: "ignored",
-          },
-          "Review completed",
-        );
-        return;
-      }
-
-      if (this.shouldStopForCancellation(runLogger, runKey, "after_hydrate_files")) {
-        return;
-      }
-
-      const prompt = buildReviewPrompt({
-        owner: context.owner,
-        repo: context.repo,
-        pullNumber: context.pullNumber,
-        title: context.title,
-        headSha: context.headSha,
-        files: reviewableFiles,
-      });
-
-      runLogger.info(
-        {
-          event: "review.prompt_built",
-          promptChars: prompt.length,
-          reviewableFileCount: reviewableFiles.length,
-          status: "completed",
-        },
-        "Review prompt built",
-      );
-
-      const outcome = await this.codex.review(
-        prompt,
+      const workspace = await this.workspaceManager.prepareWorkspace(
+        context,
         createChildLogger(runLogger, {
-          component: "codex",
+          component: "workspace",
         }),
       );
 
-      if (!outcome.ok) {
-        runLogger.warn(
-          {
-            event: "review.codex_failed",
-            reason: outcome.reason,
-            status: "failed",
-          },
-          "Review Codex step failed",
-        );
-
-        await this.github.publishFailureComment(
-          context,
-          buildFailureComment({
-            headSha: context.headSha,
-            reason: outcome.reason,
-          }),
-        );
-        return;
-      }
-
-      runLogger.info(
-        {
-          decision: outcome.result.decision,
-          event: "review.codex_completed",
-          findingCount: outcome.result.findings.length,
-          score: outcome.result.score,
-          status: "completed",
-        },
-        "Review Codex step completed",
-      );
-
-      if (this.shouldStopForCancellation(runLogger, runKey, "after_codex")) {
-        return;
-      }
-
-      const reviewEvent = determineReviewEvent(outcome.result.findings);
-      const { comments, overflowFindings } = separateInlineAndOverflowFindings(
-        outcome.result.findings,
-        reviewableFiles,
-      );
-
-      runLogger.info(
-        {
-          event: "review.publish_started",
-          inlineCommentCount: comments.length,
-          overflowFindingCount: overflowFindings.length,
-          reviewEvent,
-          status: "started",
-        },
-        "Review publish started",
-      );
-
-      if (this.shouldStopForCancellation(runLogger, runKey, "before_publish")) {
-        return;
-      }
-
-      const body = buildReviewBody({
-        headSha: context.headSha,
-        score: outcome.result.score,
-        summary: outcome.result.summary,
-        event: reviewEvent,
-        overflowFindings,
-      });
-      const fallbackBody = buildReviewBody({
-        headSha: context.headSha,
-        score: outcome.result.score,
-        summary: outcome.result.summary,
-        event: reviewEvent,
-        overflowFindings: outcome.result.findings,
-      });
-
       try {
-        await this.github.publishReview({
-          context,
-          body,
-          event: reviewEvent,
-          comments,
-        });
-        publishedReview = true;
         runLogger.info(
           {
-            event: "review.published",
-            inlineCommentCount: comments.length,
-            reviewEvent,
-            status: "published",
+            event: "review.workspace_prepared",
+            reviewableFileCount: workspace.reviewableFiles.length,
+            status: "completed",
+            workingDirectory: workspace.workingDirectory,
           },
-          "Review published",
-        );
-      } catch (error) {
-        if (!comments.length || !isInvalidInlineReviewCommentError(error)) {
-          throw error;
-        }
-
-        runLogger.warn(
-          {
-            commentCount: comments.length,
-            error,
-            event: "review.publish_fallback",
-            reason: "invalid_inline_location",
-            status: "retrying",
-          },
-          "Review publish fallback",
+          "Review workspace prepared",
         );
 
-        if (this.shouldStopForCancellation(runLogger, runKey, "before_publish_fallback")) {
+        if (this.shouldStopForCancellation(runLogger, runKey, "after_workspace_prepare")) {
           return;
         }
 
-        await this.github.publishReview({
-          context,
-          body: fallbackBody,
-          event: reviewEvent,
-          comments: [],
+        if (workspace.reviewableFiles.length === 0) {
+          runLogger.info(
+            {
+              event: "review.completed",
+              reason: "no_reviewable_files",
+              status: "ignored",
+            },
+            "Review completed",
+          );
+          return;
+        }
+
+        const prompt = buildReviewPrompt({
+          owner: context.owner,
+          repo: context.repo,
+          pullNumber: context.pullNumber,
+          title: context.title,
+          headSha: context.headSha,
+          diff: workspace.diff,
+          files: workspace.reviewableFiles,
         });
-        publishedReview = true;
+
         runLogger.info(
           {
-            event: "review.publish_fallback",
-            fallbackMode: true,
-            reviewEvent,
-            status: "published",
+            event: "review.prompt_built",
+            promptChars: prompt.length,
+            reviewableFileCount: workspace.reviewableFiles.length,
+            status: "completed",
           },
-          "Review published",
+          "Review prompt built",
         );
+
+        const outcome = await this.codex.review(
+          {
+            prompt,
+            workingDirectory: workspace.workingDirectory,
+          },
+          createChildLogger(runLogger, {
+            component: "codex",
+          }),
+        );
+
+        if (!outcome.ok) {
+          runLogger.warn(
+            {
+              event: "review.codex_failed",
+              reason: outcome.reason,
+              status: "failed",
+            },
+            "Review Codex step failed",
+          );
+
+          await this.github.publishFailureComment(
+            context,
+            buildFailureComment({
+              headSha: context.headSha,
+              reason: outcome.reason,
+            }),
+          );
+          return;
+        }
+
+        runLogger.info(
+          {
+            decision: outcome.result.decision,
+            event: "review.codex_completed",
+            findingCount: outcome.result.findings.length,
+            score: outcome.result.score,
+            status: "completed",
+          },
+          "Review Codex step completed",
+        );
+
+        if (this.shouldStopForCancellation(runLogger, runKey, "after_codex")) {
+          return;
+        }
+
+        const reviewEvent = determineReviewEvent(outcome.result.findings);
+        const { comments, overflowFindings } = separateInlineAndOverflowFindings(
+          outcome.result.findings,
+          workspace.reviewableFiles,
+        );
+
+        runLogger.info(
+          {
+            event: "review.publish_started",
+            inlineCommentCount: comments.length,
+            overflowFindingCount: overflowFindings.length,
+            reviewEvent,
+            status: "started",
+          },
+          "Review publish started",
+        );
+
+        if (this.shouldStopForCancellation(runLogger, runKey, "before_publish")) {
+          return;
+        }
+
+        const body = buildReviewBody({
+          headSha: context.headSha,
+          score: outcome.result.score,
+          summary: outcome.result.summary,
+          event: reviewEvent,
+          overflowFindings,
+        });
+        const fallbackBody = buildReviewBody({
+          headSha: context.headSha,
+          score: outcome.result.score,
+          summary: outcome.result.summary,
+          event: reviewEvent,
+          overflowFindings: outcome.result.findings,
+        });
+
+        try {
+          await this.github.publishReview({
+            context,
+            body,
+            event: reviewEvent,
+            comments,
+          });
+          publishedReview = true;
+          runLogger.info(
+            {
+              event: "review.published",
+              inlineCommentCount: comments.length,
+              reviewEvent,
+              status: "published",
+            },
+            "Review published",
+          );
+        } catch (error) {
+          if (!comments.length || !isInvalidInlineReviewCommentError(error)) {
+            throw error;
+          }
+
+          runLogger.warn(
+            {
+              commentCount: comments.length,
+              error,
+              event: "review.publish_fallback",
+              reason: "invalid_inline_location",
+              status: "retrying",
+            },
+            "Review publish fallback",
+          );
+
+          if (this.shouldStopForCancellation(runLogger, runKey, "before_publish_fallback")) {
+            return;
+          }
+
+          await this.github.publishReview({
+            context,
+            body: fallbackBody,
+            event: reviewEvent,
+            comments: [],
+          });
+          publishedReview = true;
+          runLogger.info(
+            {
+              event: "review.publish_fallback",
+              fallbackMode: true,
+              reviewEvent,
+              status: "published",
+            },
+            "Review published",
+          );
+        }
+      } finally {
+        await workspace.cleanup();
       }
     } catch (error) {
       runLogger.error(
@@ -597,57 +609,4 @@ export class ReviewService {
     }
   }
 
-  private async hydrateReviewableFiles(
-    context: PullRequestContext,
-    changedFiles: GitHubPullRequestFile[],
-    runLogger: AppLogger,
-  ): Promise<ReviewableFile[]> {
-    const filteredFiles = filterReviewableFiles(changedFiles);
-
-    const hydratedFiles = await Promise.all(
-      filteredFiles.map(async (file) => {
-        try {
-          const content = await this.github.getFileContent(context, file.path);
-
-          if (!content || !file.patch) {
-            return null;
-          }
-
-          return {
-            path: file.path,
-            patch: file.patch,
-            content,
-          };
-        } catch (error) {
-          runLogger.warn(
-            {
-              error,
-              event: "review.file_skipped",
-              path: file.path,
-              reason: "file_unreadable",
-              status: "skipped",
-            },
-            "Review file skipped",
-          );
-          return null;
-        }
-      }),
-    );
-
-    const reviewableFiles = hydratedFiles.filter((file): file is ReviewableFile => file !== null);
-
-    runLogger.info(
-      {
-        changedFileCount: changedFiles.length,
-        event: "review.files_hydrated",
-        filteredFileCount: filteredFiles.length,
-        reviewableFileCount: reviewableFiles.length,
-        skippedFileCount: hydratedFiles.length - reviewableFiles.length,
-        status: "completed",
-      },
-      "Review files hydrated",
-    );
-
-    return reviewableFiles;
-  }
 }

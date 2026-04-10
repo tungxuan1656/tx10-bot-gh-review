@@ -1,12 +1,13 @@
 # AI Code Review Bot
 
-AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, waits until the configured bot account is explicitly requested as a reviewer, then builds a constrained AI review request from the diff plus current file contents and publishes one GitHub review per head SHA.
+AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, waits until the configured bot account is explicitly requested as a reviewer, then materializes the pull request into a temporary git workspace, builds a constrained AI review request from the exact `baseSha..headSha` diff plus head file contents, and publishes one GitHub review per head SHA.
 
 ## MVP Scope
 
 - Repository or organization webhook ingestion
 - Diff filtering for `.js`, `.jsx`, `.ts`, `.tsx`, `.py`, and `.java`
-- Codex CLI invocation with a strict JSON output contract
+- Temporary git workspace checkout at the webhook `headSha`
+- Codex CLI invocation in the temporary workspace with a strict JSON output contract
 - Deterministic GitHub review publishing:
 - `REQUEST_CHANGES` for `critical` or `high`
 - `COMMENT` for `medium`, `low`, or `info`

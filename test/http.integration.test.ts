@@ -10,13 +10,29 @@ describe("createServer", () => {
     const webhooks = new Webhooks({ secret });
     const payload = JSON.stringify({
       action: "review_requested",
-      repository: { name: "repo", owner: { login: "acme" } },
+      repository: {
+        name: "repo",
+        clone_url: "https://github.com/acme/repo.git",
+        owner: { login: "acme" },
+      },
       pull_request: {
         number: 1,
         title: "Hello",
         html_url: "https://github.com/acme/repo/pull/1",
-        head: { sha: "head" },
-        base: { sha: "base" },
+        head: {
+          ref: "feature/hello",
+          sha: "head",
+          repo: {
+            clone_url: "https://github.com/acme/repo.git",
+          },
+        },
+        base: {
+          ref: "main",
+          sha: "base",
+          repo: {
+            clone_url: "https://github.com/acme/repo.git",
+          },
+        },
         requested_reviewers: [{ login: "review-bot" }],
       },
       requested_reviewer: {
@@ -61,9 +77,11 @@ describe("createServer", () => {
         actionKind: "review_requested",
         deliveryId: "123",
         headSha: "head",
+        headRef: "feature/hello",
         owner: "acme",
         pullNumber: 1,
         repo: "repo",
+        baseRef: "main",
         requestedReviewerLogin: "review-bot",
         senderLogin: "octocat",
       }),

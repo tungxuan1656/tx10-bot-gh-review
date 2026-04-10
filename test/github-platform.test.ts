@@ -14,7 +14,11 @@ function createPullRequestContext(): PullRequestContext {
     title: "Example",
     htmlUrl: "https://github.com/acme/repo/pull/42",
     headSha: "abc123",
+    headRef: "feature/example",
+    headCloneUrl: "https://github.com/acme/repo.git",
     baseSha: "def456",
+    baseRef: "main",
+    baseCloneUrl: "https://github.com/acme/repo.git",
   };
 }
 

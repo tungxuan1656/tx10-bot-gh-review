@@ -20,7 +20,11 @@ export type NormalizedPullRequestEvent = {
   title: string;
   htmlUrl: string;
   headSha: string;
+  headRef: string;
+  headCloneUrl: string;
   baseSha: string;
+  baseRef: string;
+  baseCloneUrl: string;
   senderLogin: string | null;
   requestedReviewerLogin: string | null;
   requestedReviewerLogins: string[];
@@ -41,6 +45,7 @@ const pullRequestWebhookPayloadSchema = z.object({
     .optional(),
   repository: z.object({
     name: z.string().min(1),
+    clone_url: z.string().min(1),
     owner: z.object({
       login: z.string().min(1),
     }),
@@ -50,10 +55,20 @@ const pullRequestWebhookPayloadSchema = z.object({
     title: z.string().min(1),
     html_url: z.string().url(),
     head: z.object({
+      ref: z.string().min(1),
       sha: z.string().min(1),
+      repo: z
+        .object({
+          clone_url: z.string().min(1),
+        })
+        .nullable(),
     }),
     base: z.object({
+      ref: z.string().min(1),
       sha: z.string().min(1),
+      repo: z.object({
+        clone_url: z.string().min(1),
+      }),
     }),
     requested_reviewers: z
       .array(
@@ -128,7 +143,12 @@ export function normalizePullRequestEvent(input: {
       title: parsed.data.pull_request.title,
       htmlUrl: parsed.data.pull_request.html_url,
       headSha: parsed.data.pull_request.head.sha,
+      headRef: parsed.data.pull_request.head.ref,
+      headCloneUrl:
+        parsed.data.pull_request.head.repo?.clone_url ?? parsed.data.repository.clone_url,
       baseSha: parsed.data.pull_request.base.sha,
+      baseRef: parsed.data.pull_request.base.ref,
+      baseCloneUrl: parsed.data.pull_request.base.repo.clone_url,
       senderLogin: parsed.data.sender?.login ?? null,
       requestedReviewerLogin: parsed.data.requested_reviewer?.login ?? null,
       requestedReviewerLogins,

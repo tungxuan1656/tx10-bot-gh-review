@@ -7,7 +7,8 @@ flowchart LR
   GitHub[GitHub Pull Request Event] --> Webhook[Express Webhook Server]
   Webhook --> Service[Review Service]
   Service --> GitHubAPI[Machine User API Client]
-  Service --> Codex[Codex CLI]
+  Service --> Workspace[Temporary Git Workspace]
+  Workspace --> Codex[Codex CLI]
   GitHubAPI --> GitHub
 ```
 
@@ -15,8 +16,9 @@ flowchart LR
 
 - **Webhook server** verifies `x-hub-signature-256`, normalizes `pull_request` webhook metadata, emits structured lifecycle logs, and dispatches asynchronous review work.
 - **Review service** routes every normalized `pull_request` action to one of three outcomes: `trigger_review`, `ignored`, or `cancel_requested`. Only `review_requested` for the configured bot starts a review; `synchronize` is audit-only, and `review_request_removed` best-effort cancels an in-flight run for the same head SHA.
-- **GitHub review platform** authenticates with the machine-user token, fetches changed files and head content, checks idempotency markers, and submits reviews or fallback comments.
-- **Codex runner** shells out to `codex exec` with a JSON Schema file so the final response is machine-validated before any GitHub action is taken.
+- **GitHub review platform** authenticates with the machine-user token, checks idempotency markers, and submits reviews or fallback comments.
+- **Temporary workspace manager** creates an isolated git directory, fetches the exact `baseSha` and `headSha`, checks out the PR head, and collects the reviewable diff plus current file contents.
+- **Codex runner** shells out to `codex exec --cd <workspace> --sandbox read-only` with a JSON Schema file so the final response is machine-validated before any GitHub action is taken.
 
 ## Sequence Diagram
 
@@ -31,8 +33,8 @@ sequenceDiagram
   GitHub->>Bot: pull_request webhook
   Bot->>Bot: Verify signature and normalize delivery metadata
   Bot->>Bot: Route action to trigger_review / ignored / cancel_requested
-  Bot->>GitHub: Fetch PR files and head content
-  Bot->>Codex: Submit filtered diff + file content prompt
+  Bot->>Bot: Prepare temporary git workspace for base/head SHAs
+  Bot->>Codex: Submit filtered git diff + head file content prompt
   Codex-->>Bot: Structured JSON review result
   Bot->>Bot: Map findings to COMMENT / REQUEST_CHANGES / APPROVE
   Bot->>GitHub: Submit review or fallback comment

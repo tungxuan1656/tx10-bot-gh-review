@@ -36,7 +36,11 @@ export type PullRequestContext = {
   title: string;
   htmlUrl: string;
   headSha: string;
+  headRef: string;
+  headCloneUrl: string;
   baseSha: string;
+  baseRef: string;
+  baseCloneUrl: string;
 };
 
 export type GitHubPullRequestFile = {

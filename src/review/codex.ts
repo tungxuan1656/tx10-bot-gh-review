@@ -40,7 +40,13 @@ const outputSchema = {
 } as const;
 
 export type CodexRunner = {
-  review(prompt: string, logger?: AppLogger): Promise<CodexReviewOutcome>;
+  review(
+    input: {
+      prompt: string;
+      workingDirectory: string;
+    },
+    logger?: AppLogger,
+  ): Promise<CodexReviewOutcome>;
 };
 
 export function createCodexRunner(input: {
@@ -51,10 +57,17 @@ export function createCodexRunner(input: {
   const timeoutMs = input.timeoutMs ?? 30_000;
 
   return {
-    async review(prompt: string, loggerOverride?: AppLogger): Promise<CodexReviewOutcome> {
+    async review(
+      reviewInput: {
+        prompt: string;
+        workingDirectory: string;
+      },
+      loggerOverride?: AppLogger,
+    ): Promise<CodexReviewOutcome> {
       const logger = loggerOverride ?? input.logger;
       const startedAt = Date.now();
       const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "codex-review-"));
+      const prompt = reviewInput.prompt;
 
       logger.debug(
         {
@@ -63,6 +76,7 @@ export function createCodexRunner(input: {
           promptChars: prompt.length,
           status: "started",
           timeoutMs,
+          workingDirectory: reviewInput.workingDirectory,
         },
         "Codex review started",
       );
@@ -77,6 +91,10 @@ export function createCodexRunner(input: {
           input.bin,
           [
             "exec",
+            "--cd",
+            reviewInput.workingDirectory,
+            "--sandbox",
+            "read-only",
             "--skip-git-repo-check",
             "--output-schema",
             schemaPath,
@@ -130,6 +148,7 @@ export function createCodexRunner(input: {
               stderrBytes: Buffer.byteLength(stderr, "utf8"),
               status: "failed",
               timeoutMs,
+              workingDirectory: reviewInput.workingDirectory,
             },
             "Codex review failed",
           );
@@ -149,6 +168,7 @@ export function createCodexRunner(input: {
               reason: "non_zero_exit",
               stderrBytes: Buffer.byteLength(stderr, "utf8"),
               status: "failed",
+              workingDirectory: reviewInput.workingDirectory,
             },
             "Codex review failed",
           );
@@ -172,6 +192,7 @@ export function createCodexRunner(input: {
               outputChars: rawOutput.length,
               reason: "invalid_json",
               status: "failed",
+              workingDirectory: reviewInput.workingDirectory,
             },
             "Codex review failed",
           );
@@ -190,6 +211,7 @@ export function createCodexRunner(input: {
             findingCount: result.data.findings.length,
             score: result.data.score,
             status: "completed",
+            workingDirectory: reviewInput.workingDirectory,
           },
           "Codex review completed",
         );
