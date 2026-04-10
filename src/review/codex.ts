@@ -7,6 +7,8 @@ import { reviewResultSchema } from "./types.js";
 import type { AppLogger } from "../logger.js";
 import type { CodexReviewOutcome } from "./types.js";
 
+const maxLoggedOutputCharacters = 1_000;
+
 const outputSchema = {
   type: "object",
   additionalProperties: false,
@@ -54,7 +56,21 @@ export function createCodexRunner(input: {
   logger: AppLogger;
   timeoutMs?: number;
 }): CodexRunner {
-  const timeoutMs = input.timeoutMs ?? 30_000;
+  const timeoutMs = input.timeoutMs ?? 900_000;
+
+  function summarizeOutput(text: string): string | undefined {
+    const trimmed = text.trim();
+
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+
+    if (trimmed.length <= maxLoggedOutputCharacters) {
+      return trimmed;
+    }
+
+    return `${trimmed.slice(0, maxLoggedOutputCharacters)}...[truncated]`;
+  }
 
   return {
     async review(
@@ -145,7 +161,10 @@ export function createCodexRunner(input: {
               event: "codex.failed",
               promptChars: prompt.length,
               reason: "timeout",
+              stderrPreview: summarizeOutput(stderr),
+              stdoutPreview: summarizeOutput(stdout),
               stderrBytes: Buffer.byteLength(stderr, "utf8"),
+              stdoutBytes: Buffer.byteLength(stdout, "utf8"),
               status: "failed",
               timeoutMs,
               workingDirectory: reviewInput.workingDirectory,
@@ -166,7 +185,10 @@ export function createCodexRunner(input: {
               exitCode,
               durationMs: Date.now() - startedAt,
               reason: "non_zero_exit",
+              stderrPreview: summarizeOutput(stderr),
+              stdoutPreview: summarizeOutput(stdout),
               stderrBytes: Buffer.byteLength(stderr, "utf8"),
+              stdoutBytes: Buffer.byteLength(stdout, "utf8"),
               status: "failed",
               workingDirectory: reviewInput.workingDirectory,
             },

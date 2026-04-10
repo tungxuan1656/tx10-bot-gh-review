@@ -65,6 +65,25 @@ async function createFakeCodexBinary(): Promise<{
   };
 }
 
+async function createSlowFakeCodexBinary(): Promise<string> {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "codex-runner-slow-test-"));
+  createdDirectories.push(tempDirectory);
+  const binPath = path.join(tempDirectory, "slow-fake-codex.mjs");
+
+  await writeFile(
+    binPath,
+    [
+      "#!/usr/bin/env node",
+      "await new Promise((resolve) => setTimeout(resolve, 200));",
+      "process.stdout.write('still running');",
+    ].join("\n"),
+    "utf8",
+  );
+  await chmod(binPath, 0o755);
+
+  return binPath;
+}
+
 describe("reviewResultSchema", () => {
   it("accepts the expected Codex response shape", () => {
     const parsed = reviewResultSchema.safeParse({
@@ -98,6 +117,34 @@ describe("reviewResultSchema", () => {
 });
 
 describe("createCodexRunner", () => {
+  it("defaults to a 15 minute timeout budget", async () => {
+    const { binPath, capturePath } = await createFakeCodexBinary();
+    process.env.TEST_CAPTURE_PATH = capturePath;
+    const logger = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const runner = createCodexRunner({
+      bin: binPath,
+      logger: logger as never,
+    });
+
+    await runner.review({
+      prompt: "Review this diff",
+      workingDirectory: "/tmp/pr-workspace",
+    });
+
+    expect(logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "codex.started",
+        timeoutMs: 900_000,
+      }),
+      "Codex review started",
+    );
+  });
+
   it("passes the workspace directory, read-only sandbox, and output schema to codex exec", async () => {
     const { binPath, capturePath } = await createFakeCodexBinary();
     process.env.TEST_CAPTURE_PATH = capturePath;
@@ -149,5 +196,51 @@ describe("createCodexRunner", () => {
     expect(capture.stdin).toBe("Review this diff");
     expect(capture.schema.properties.findings).toBeDefined();
     expect(capture.cwd).toBe(process.cwd());
+  });
+
+  it("times out using the configured timeout and logs bounded output previews", async () => {
+    const binPath = await createSlowFakeCodexBinary();
+    const logger = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const runner = createCodexRunner({
+      bin: binPath,
+      logger: logger as never,
+      timeoutMs: 50,
+    });
+
+    const outcome = await runner.review({
+      prompt: "Review this diff",
+      workingDirectory: "/tmp/pr-workspace",
+    });
+
+    expect(outcome).toEqual({
+      ok: false,
+      reason: "Codex timed out after 50ms.",
+    });
+    const loggedTimeoutPayload = logger.error.mock.calls[0]?.[0] as {
+      event: string;
+      reason: string;
+      timeoutMs: number;
+      stdoutBytes: number;
+      stderrBytes: number;
+    };
+
+    expect(loggedTimeoutPayload.event).toBe("codex.failed");
+    expect(loggedTimeoutPayload.reason).toBe("timeout");
+    expect(loggedTimeoutPayload.timeoutMs).toBe(50);
+    expect(typeof loggedTimeoutPayload.stdoutBytes).toBe("number");
+    expect(typeof loggedTimeoutPayload.stderrBytes).toBe("number");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "codex.failed",
+        reason: "timeout",
+        timeoutMs: 50,
+      }),
+      "Codex review failed",
+    );
   });
 });

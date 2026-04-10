@@ -13,6 +13,7 @@ const github = createGitHubReviewPlatform(config);
 const codex = createCodexRunner({
   bin: config.codexBin,
   logger,
+  timeoutMs: config.codexTimeoutMs,
 });
 const workspaceManager = createTemporaryReviewWorkspaceManager({
   githubToken: config.githubToken,

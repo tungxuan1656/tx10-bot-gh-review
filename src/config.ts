@@ -19,6 +19,7 @@ const envSchema = z.object({
   GITHUB_BOT_LOGIN: z.string().min(1, "GITHUB_BOT_LOGIN is required"),
   GITHUB_WEBHOOK_SECRET: z.string().min(1, "GITHUB_WEBHOOK_SECRET is required"),
   CODEX_BIN: z.string().min(1).default("codex"),
+  CODEX_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   LOG_LEVEL: logLevelSchema.default("info"),
   LOG_PRETTY: logPrettySchema.default("auto"),
 });
@@ -30,6 +31,7 @@ export type AppConfig = {
   githubBotLogin: string;
   githubWebhookSecret: string;
   codexBin: string;
+  codexTimeoutMs: number;
   logLevel: z.infer<typeof logLevelSchema>;
   logPretty: z.infer<typeof logPrettySchema>;
 };
@@ -44,6 +46,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     githubBotLogin: parsed.GITHUB_BOT_LOGIN,
     githubWebhookSecret: parsed.GITHUB_WEBHOOK_SECRET,
     codexBin: parsed.CODEX_BIN,
+    codexTimeoutMs: parsed.CODEX_TIMEOUT_MS,
     logLevel: parsed.LOG_LEVEL,
     logPretty: parsed.LOG_PRETTY,
   };

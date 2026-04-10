@@ -29,6 +29,7 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 | `GITHUB_BOT_LOGIN` | Yes | Exact GitHub login of the machine user reviewer |
 | `GITHUB_WEBHOOK_SECRET` | Yes | Shared secret used to verify repository or organization webhooks |
 | `CODEX_BIN` | No | Codex CLI binary path. Defaults to `codex`. |
+| `CODEX_TIMEOUT_MS` | No | Max review runtime per Codex invocation in milliseconds. Defaults to `900000` (15 minutes). |
 | `LOG_LEVEL` | No | Pino log level. Defaults to `info`. |
 | `LOG_PRETTY` | No | Pretty-print logs (`auto`, `true`, or `false`). Defaults to `auto` (enabled in development TTY). |
 | `PORT` | No | HTTP port. Defaults to `43191`. |
@@ -63,6 +64,8 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 ## Deployment
 
 The repo ships with a supported single-process `Dockerfile` that installs Codex CLI and exposes the default app port `43191`, but the recommended first production setup is still a small Linux server running the app with `systemd` behind `nginx`. If you use the container image, you still need to provide Codex authentication inside the container. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR head SHA before publishing a new result after the bot account is requested for review.
+
+Codex reviews are allowed to run for up to 15 minutes by default so larger pull requests have enough time to complete. If needed, tune this with `CODEX_TIMEOUT_MS`.
 
 ## Further Reading
 
