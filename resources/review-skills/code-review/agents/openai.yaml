@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Review"
+  short_description: "Rigorous review with severity and confidence"
+  default_prompt: "Use $code-review to review the current diff or PR with a change summary first, then evidence-backed findings ranked by severity and confidence."
