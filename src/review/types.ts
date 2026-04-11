@@ -2,10 +2,9 @@ import { z } from "zod";
 
 export const findingSeveritySchema = z.enum([
   "critical",
-  "high",
-  "medium",
-  "low",
-  "info",
+  "major",
+  "minor",
+  "improvement",
 ]);
 
 export const reviewFindingSchema = z.object({
@@ -19,7 +18,7 @@ export const reviewFindingSchema = z.object({
 export const reviewResultSchema = z.object({
   summary: z.string().min(1),
   score: z.number().min(0).max(10),
-  decision: z.enum(["approve", "comment", "request_changes"]),
+  decision: z.enum(["approve", "request_changes"]),
   findings: z.array(reviewFindingSchema),
 });
 
@@ -67,7 +66,9 @@ export type CodexReviewFailure = {
 
 export type CodexReviewOutcome = CodexReviewSuccess | CodexReviewFailure;
 
-export type ReviewEvent = "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
+export type ReviewDecision = z.infer<typeof reviewResultSchema.shape.decision>;
+
+export type ReviewEvent = "APPROVE" | "REQUEST_CHANGES";
 
 export type InlineReviewComment = {
   path: string;

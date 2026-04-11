@@ -1,4 +1,4 @@
-import { determineReviewEvent } from "./decision.js";
+import { determineReviewDecision, toReviewEvent } from "./decision.js";
 import { isCommentableRightSideLine } from "./patch.js";
 import { buildReviewPrompt } from "./prompt.js";
 import { buildFailureComment, buildReviewBody, buildReviewMarker } from "./summary.js";
@@ -10,6 +10,7 @@ import type { NormalizedPullRequestEvent } from "./webhook-event.js";
 import type {
   InlineReviewComment,
   PullRequestContext,
+  ReviewDecision,
   ReviewFinding,
   ReviewableFile,
 } from "./types.js";
@@ -145,6 +146,16 @@ function getErrorStatusCode(error: unknown): number | null {
   };
 
   return typeof candidate.status === "number" ? candidate.status : null;
+}
+
+function buildDecisionMismatchReason(input: {
+  actualDecision: ReviewDecision;
+  expectedDecision: ReviewDecision;
+}): string {
+  return [
+    "Codex returned a decision that does not match the findings severity policy.",
+    `Expected "${input.expectedDecision}" but received "${input.actualDecision}".`,
+  ].join(" ");
 }
 
 export class ReviewService {
@@ -461,7 +472,34 @@ export class ReviewService {
           return;
         }
 
-        const reviewEvent = determineReviewEvent(outcome.result.findings);
+        const expectedDecision = determineReviewDecision(outcome.result.findings);
+        if (outcome.result.decision !== expectedDecision) {
+          const reason = buildDecisionMismatchReason({
+            actualDecision: outcome.result.decision,
+            expectedDecision,
+          });
+
+          runLogger.warn(
+            {
+              actualDecision: outcome.result.decision,
+              event: "review.codex_contract_mismatch",
+              expectedDecision,
+              status: "failed",
+            },
+            "Review Codex contract mismatch",
+          );
+
+          await this.github.publishFailureComment(
+            context,
+            buildFailureComment({
+              headSha: context.headSha,
+              reason,
+            }),
+          );
+          return;
+        }
+
+        const reviewEvent = toReviewEvent(outcome.result.decision);
         const { comments, overflowFindings } = separateInlineAndOverflowFindings(
           outcome.result.findings,
           workspace.reviewableFiles,

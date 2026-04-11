@@ -18,7 +18,7 @@ const outputSchema = {
     score: { type: "number", minimum: 0, maximum: 10 },
     decision: {
       type: "string",
-      enum: ["approve", "comment", "request_changes"],
+      enum: ["approve", "request_changes"],
     },
     findings: {
       type: "array",
@@ -29,7 +29,7 @@ const outputSchema = {
         properties: {
           severity: {
             type: "string",
-            enum: ["critical", "high", "medium", "low", "info"],
+            enum: ["critical", "major", "minor", "improvement"],
           },
           path: { type: "string" },
           line: { type: "integer", minimum: 1 },

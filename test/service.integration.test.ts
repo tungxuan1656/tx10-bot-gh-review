@@ -126,7 +126,7 @@ function createSuccessfulCodexReview(): CodexRunner["review"] {
         decision: "request_changes",
         findings: [
           {
-            severity: "high",
+            severity: "major",
             path: "src/app.ts",
             line: 1,
             title: "Console statement committed",
@@ -167,6 +167,11 @@ describe("ReviewService", () => {
     await service.handlePullRequestEvent(createPullRequestEvent());
 
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1);
+    expect(github.mocks.publishReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "REQUEST_CHANGES",
+      }),
+    );
     expect(github.mocks.publishFailureComment).not.toHaveBeenCalled();
     expect(workspace.mocks.cleanup).toHaveBeenCalledTimes(1);
   });
@@ -403,6 +408,90 @@ describe("ReviewService", () => {
     expect(reviewInput.prompt).toContain("diff --git a/src/app.ts b/src/app.ts");
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1);
     expect(github.mocks.publishFailureComment).not.toHaveBeenCalled();
+  });
+
+  it("publishes APPROVE with comments when findings are non-blocking", async () => {
+    const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
+    const codex: CodexRunner = {
+      review: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          summary: "Minor follow-up recommended.",
+          score: 8,
+          decision: "approve",
+          findings: [
+            {
+              severity: "minor",
+              path: "src/app.ts",
+              line: 1,
+              title: "Small cleanup",
+              comment: "Prefer the shared logger helper here.",
+            },
+          ],
+        },
+      }),
+    };
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
+    await service.handlePullRequestEvent(createPullRequestEvent());
+
+    const publishReviewMock = vi.mocked(github.mocks.publishReview);
+    expect(publishReviewMock).toHaveBeenCalledTimes(1);
+    const publishInput = publishReviewMock.mock.calls[0]?.[0] as {
+      comments: Array<{ body: string }>;
+      event: string;
+    };
+    expect(publishInput.event).toBe("APPROVE");
+    expect(publishInput.comments).toHaveLength(1);
+    expect(publishInput.comments[0]?.body).toContain("Small cleanup");
+    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled();
+  });
+
+  it("publishes a neutral failure comment when decision mismatches finding severity", async () => {
+    const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
+    const codex: CodexRunner = {
+      review: vi.fn().mockResolvedValue({
+        ok: true,
+        result: {
+          summary: "Mismatch response.",
+          score: 8,
+          decision: "approve",
+          findings: [
+            {
+              severity: "major",
+              path: "src/app.ts",
+              line: 1,
+              title: "Missing validation",
+              comment: "This should block the review.",
+            },
+          ],
+        },
+      }),
+    };
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
+    await service.handlePullRequestEvent(createPullRequestEvent());
+
+    expect(github.mocks.publishReview).not.toHaveBeenCalled();
+    expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(1);
+    expect(github.mocks.publishFailureComment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('Expected "request_changes" but received "approve".'),
+    );
   });
 
   it("retries with a body-only review when GitHub rejects inline comment locations", async () => {

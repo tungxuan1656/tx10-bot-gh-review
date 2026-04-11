@@ -34,6 +34,7 @@ Expected response:
 - Check that `CODEX_BIN` resolves to a working Codex CLI binary
 - Run `codex --help` on the host to confirm availability
 - Inspect service logs for timeout or non-zero exit warnings
+- Confirm `resources/review-skills/` exists in the deployed service and can be copied into the temp workspace
 
 ### No review was published
 
@@ -53,6 +54,7 @@ Expected response:
 - The MVP stores in-flight dedupe state in memory and persistent dedupe state on the PR itself via HTML comment markers.
 - A new commit naturally invalidates the previous marker because the head SHA changes, but this service will not re-review until the bot is explicitly requested again.
 - The fallback comment is intentionally neutral and never blocks merging on transient infrastructure failures.
+- Non-blocking findings are still published as an `APPROVE` review when the response decision is consistent with the severity policy.
 
 ## Logging Guide
 

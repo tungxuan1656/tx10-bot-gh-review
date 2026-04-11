@@ -133,6 +133,19 @@ describe("createTemporaryReviewWorkspaceManager", () => {
         "utf8",
       );
       expect(checkedOutFile).toContain("head");
+
+      const copiedSkill = await readFile(
+        path.join(workspace.workingDirectory, ".agents/skills/code-review/SKILL.md"),
+        "utf8",
+      );
+      expect(copiedSkill).toContain("# Code Review");
+
+      await expect(
+        readFile(
+          path.join(workspace.workingDirectory, ".agents/skills/api-design/SKILL.md"),
+          "utf8",
+        ),
+      ).resolves.toContain("API");
     } finally {
       const workingDirectory = workspace.workingDirectory;
       await workspace.cleanup();

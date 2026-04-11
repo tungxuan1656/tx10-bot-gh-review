@@ -7,11 +7,12 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 - Repository or organization webhook ingestion
 - Diff filtering for `.js`, `.jsx`, `.ts`, `.tsx`, `.py`, and `.java`
 - Temporary git workspace checkout at the webhook `headSha`
+- Review skill bundle injection from `resources/review-skills/*` into the temp workspace `.agents/skills`
 - Codex CLI invocation in the temporary workspace with a strict JSON output contract
 - Deterministic GitHub review publishing:
-- `REQUEST_CHANGES` for `critical` or `high`
-- `COMMENT` for `medium`, `low`, or `info`
-- `APPROVE` when there are no findings
+- `REQUEST_CHANGES` for `critical` or `major`
+- `APPROVE` for `minor`, `improvement`, or no findings
+- `APPROVE` may still include inline comments or summary findings for non-blocking issues
 - Review only when the configured bot account is requested via `review_requested`
 
 ## Project Layout

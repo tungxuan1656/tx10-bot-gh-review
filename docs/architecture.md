@@ -17,7 +17,7 @@ flowchart LR
 - **Webhook server** verifies `x-hub-signature-256`, normalizes `pull_request` webhook metadata, emits structured lifecycle logs, and dispatches asynchronous review work.
 - **Review service** routes every normalized `pull_request` action to one of three outcomes: `trigger_review`, `ignored`, or `cancel_requested`. Only `review_requested` for the configured bot starts a review; `synchronize` is audit-only, and `review_request_removed` best-effort cancels an in-flight run for the same head SHA.
 - **GitHub review platform** authenticates with the machine-user token, checks idempotency markers, and submits reviews or fallback comments.
-- **Temporary workspace manager** creates an isolated git directory, fetches the exact `baseSha` and `headSha`, checks out the PR head, and collects the reviewable diff plus current file contents.
+- **Temporary workspace manager** creates an isolated git directory, fetches the exact `baseSha` and `headSha`, checks out the PR head, copies `resources/review-skills/*` into `.agents/skills`, and collects the reviewable diff plus current file contents.
 - **Codex runner** shells out to `codex exec --cd <workspace> --sandbox read-only` with a JSON Schema file so the final response is machine-validated before any GitHub action is taken.
 
 ## Sequence Diagram
@@ -34,9 +34,10 @@ sequenceDiagram
   Bot->>Bot: Verify signature and normalize delivery metadata
   Bot->>Bot: Route action to trigger_review / ignored / cancel_requested
   Bot->>Bot: Prepare temporary git workspace for base/head SHAs
+  Bot->>Bot: Copy bundled review skills into temp workspace
   Bot->>Codex: Submit filtered git diff + head file content prompt
   Codex-->>Bot: Structured JSON review result
-  Bot->>Bot: Map findings to COMMENT / REQUEST_CHANGES / APPROVE
+  Bot->>Bot: Validate decision against findings and map to REQUEST_CHANGES / APPROVE
   Bot->>GitHub: Submit review or fallback comment
 ```
 

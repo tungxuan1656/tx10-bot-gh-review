@@ -40,6 +40,7 @@ export function buildReviewPrompt(input: {
 
   return [
     "You are reviewing a GitHub pull request diff.",
+    'Use the `code-review` skill available in the workspace and follow it strictly for a rigorous review.',
     "Return JSON only.",
     "Do not include markdown fences or any prose outside the JSON object.",
     "Focus on concrete bugs, correctness issues, security issues, and missing validation.",
@@ -51,9 +52,10 @@ export function buildReviewPrompt(input: {
     "- 10 means no actionable concerns.",
     "",
     "Decision guidance:",
-    '- Use "request_changes" only when at least one finding is critical or high severity.',
-    '- Use "comment" when findings are medium, low, or info only.',
-    '- Use "approve" when there are no actionable findings.',
+    '- Decision must be exactly "request_changes" or "approve".',
+    '- Use "request_changes" when at least one finding is "critical" or "major".',
+    '- Use "approve" when findings are only "minor" or "improvement", or when there are no findings.',
+    '- Minor and improvement findings should still include concrete comments and fix guidance when present.',
     "",
     `Repository: ${input.owner}/${input.repo}`,
     `Pull Request: #${input.pullNumber}`,
@@ -72,7 +74,7 @@ export function buildReviewPrompt(input: {
         decision: "approve",
         findings: [
           {
-            severity: "medium",
+            severity: "minor",
             path: "src/example.ts",
             line: 10,
             title: "Short issue title",

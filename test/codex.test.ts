@@ -89,10 +89,10 @@ describe("reviewResultSchema", () => {
     const parsed = reviewResultSchema.safeParse({
       summary: "Looks mostly good.",
       score: 8.5,
-      decision: "comment",
+      decision: "approve",
       findings: [
         {
-          severity: "medium",
+          severity: "minor",
           path: "src/app.ts",
           line: 14,
           title: "Unhandled JSON parsing",
@@ -110,6 +110,25 @@ describe("reviewResultSchema", () => {
       score: 12,
       decision: "approve",
       findings: [],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects legacy decision and severity values", () => {
+    const parsed = reviewResultSchema.safeParse({
+      summary: "Legacy response.",
+      score: 8,
+      decision: "comment",
+      findings: [
+        {
+          severity: "medium",
+          path: "src/app.ts",
+          line: 14,
+          title: "Legacy severity",
+          comment: "Old taxonomy should fail.",
+        },
+      ],
     });
 
     expect(parsed.success).toBe(false);

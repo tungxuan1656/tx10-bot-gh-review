@@ -17,11 +17,7 @@ export function buildReviewBody(input: {
   overflowFindings: ReviewFinding[];
 }): string {
   const statusLine =
-    input.event === "APPROVE"
-      ? "Verdict: APPROVE"
-      : input.event === "REQUEST_CHANGES"
-        ? "Verdict: REQUEST_CHANGES"
-        : "Verdict: COMMENT";
+    input.event === "REQUEST_CHANGES" ? "Verdict: REQUEST_CHANGES" : "Verdict: APPROVE";
 
   const overflowSection =
     input.overflowFindings.length === 0

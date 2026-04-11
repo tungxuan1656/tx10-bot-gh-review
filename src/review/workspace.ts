@@ -1,7 +1,8 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { isReviewableFilePath } from "./filter-files.js";
 import type { AppLogger } from "../logger.js";
@@ -35,6 +36,61 @@ type ChangedFile = {
   path: string;
   status: string;
 };
+
+const reviewSkillsRelativePath = path.join("resources", "review-skills");
+const currentFilePath = fileURLToPath(import.meta.url);
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveProjectRootFrom(startPath: string): Promise<string> {
+  let currentPath = path.dirname(startPath);
+
+  while (true) {
+    if (await pathExists(path.join(currentPath, reviewSkillsRelativePath))) {
+      return currentPath;
+    }
+
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      throw new Error(
+        `Could not resolve project root containing ${reviewSkillsRelativePath} from ${startPath}.`,
+      );
+    }
+
+    currentPath = parentPath;
+  }
+}
+
+async function copyReviewSkillsToWorkspace(workingDirectory: string): Promise<void> {
+  const projectRoot = await resolveProjectRootFrom(currentFilePath);
+  const sourceSkillsDirectory = path.join(projectRoot, reviewSkillsRelativePath);
+  const destinationSkillsDirectory = path.join(workingDirectory, ".agents", "skills");
+  const skillEntries = await readdir(sourceSkillsDirectory, { withFileTypes: true });
+
+  await mkdir(destinationSkillsDirectory, { recursive: true });
+
+  await Promise.all(
+    skillEntries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) =>
+        cp(
+          path.join(sourceSkillsDirectory, entry.name),
+          path.join(destinationSkillsDirectory, entry.name),
+          {
+            force: true,
+            recursive: true,
+          },
+        ),
+      ),
+  );
+}
 
 function isRenameOrCopy(status: string): boolean {
   return status.startsWith("R") || status.startsWith("C");
@@ -326,6 +382,8 @@ export function createTemporaryReviewWorkspaceManager(
           redactions: commandRedactions,
           timeoutMs,
         });
+
+        await copyReviewSkillsToWorkspace(workingDirectory);
 
         const changedFiles = parseChangedFiles(
           await runCommand({

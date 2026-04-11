@@ -1,23 +1,27 @@
-import type { FindingSeverity, ReviewEvent, ReviewFinding } from "./types.js";
+import type {
+  FindingSeverity,
+  ReviewDecision,
+  ReviewEvent,
+  ReviewFinding,
+} from "./types.js";
 
 const severityRank: Record<FindingSeverity, number> = {
-  critical: 5,
-  high: 4,
-  medium: 3,
-  low: 2,
-  info: 1,
+  critical: 4,
+  major: 3,
+  minor: 2,
+  improvement: 1,
 };
 
-export function determineReviewEvent(findings: ReviewFinding[]): ReviewEvent {
-  if (findings.some((finding) => finding.severity === "critical" || finding.severity === "high")) {
-    return "REQUEST_CHANGES";
-  }
+export function determineReviewDecision(findings: ReviewFinding[]): ReviewDecision {
+  return findings.some(
+    (finding) => finding.severity === "critical" || finding.severity === "major",
+  )
+    ? "request_changes"
+    : "approve";
+}
 
-  if (findings.length > 0) {
-    return "COMMENT";
-  }
-
-  return "APPROVE";
+export function toReviewEvent(decision: ReviewDecision): ReviewEvent {
+  return decision === "request_changes" ? "REQUEST_CHANGES" : "APPROVE";
 }
 
 export function sortFindingsBySeverity(findings: ReviewFinding[]): ReviewFinding[] {
