@@ -13,11 +13,17 @@ export function buildReviewBody(input: {
   headSha: string;
   score: number;
   summary: string;
+  changesOverview?: string;
   event: ReviewEvent;
   overflowFindings: ReviewFinding[];
 }): string {
   const statusLine =
     input.event === "REQUEST_CHANGES" ? "Verdict: REQUEST_CHANGES" : "Verdict: APPROVE";
+
+  const changesOverviewSection =
+    input.changesOverview && input.changesOverview.trim()
+      ? ["", "### Changes Overview", input.changesOverview.trim()].join("\n")
+      : "";
 
   const overflowSection =
     input.overflowFindings.length === 0
@@ -36,6 +42,7 @@ export function buildReviewBody(input: {
     `Code Quality Score: ${input.score.toFixed(1)}/10`,
     "",
     input.summary,
+    changesOverviewSection,
     overflowSection,
   ]
     .filter(Boolean)

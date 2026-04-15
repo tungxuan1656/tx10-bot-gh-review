@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { determineReviewDecision, toReviewEvent } from "./decision.js";
 import { isCommentableRightSideLine } from "./patch.js";
-import { buildReviewPrompt } from "./prompt.js";
+import { buildPhase1Prompt, buildPhase2Prompt, buildPhase3Prompt } from "./prompt.js";
 import { buildFailureComment, buildReviewBody, buildReviewMarker } from "./summary.js";
 import { createChildLogger } from "../logger.js";
 import type { AppLogger } from "../logger.js";
@@ -13,6 +13,7 @@ import type { ReviewPlatform } from "./github-platform.js";
 import type { NormalizedPullRequestEvent } from "./webhook-event.js";
 import type {
   InlineReviewComment,
+  PRInfoObject,
   PullRequestContext,
   ReviewDecision,
   ReviewFinding,
@@ -754,8 +755,26 @@ export class ReviewService {
         return;
       }
 
+      // Step 1: Fetch PR intelligence package before workspace setup
+      const prInfo: PRInfoObject = await this.github.getPRInfo(context);
+
+      runLogger.info(
+        {
+          commitCount: prInfo.commits.length,
+          event: "review.pr_info_fetched",
+          fileCount: prInfo.changedFilePaths.length,
+          status: "completed",
+        },
+        "PR info fetched",
+      );
+
+      if (this.shouldStopForCancellation(runLogger, run, "after_pr_info")) {
+        return;
+      }
+
       const workspace = await this.workspaceManager.prepareWorkspace(
         context,
+        prInfo,
         createChildLogger(runLogger, {
           component: "workspace",
         }),
@@ -800,32 +819,47 @@ export class ReviewService {
           return;
         }
 
-        const prompt = buildReviewPrompt({
+        const phase1Prompt = buildPhase1Prompt({
           owner: context.owner,
           repo: context.repo,
           pullNumber: context.pullNumber,
           title: context.title,
           headSha: context.headSha,
-          diff: workspace.diff,
-          files: workspace.reviewableFiles,
-          discussionContextMarkdown: discussionMarkdown,
-          discussionFilePath: reviewCommentsFileName,
+          prInfoFilePath: "pr-info.yaml",
         });
 
         runLogger.info(
           {
-            event: "review.prompt_built",
-            promptChars: prompt.length,
+            event: "review.prompts_built",
+            phase1PromptChars: phase1Prompt.length,
             reviewableFileCount: workspace.reviewableFiles.length,
             status: "completed",
           },
-          "Review prompt built",
+          "Review prompts built",
         );
 
-        const outcome = await this.codex.review(
+        const outcome = await this.codex.reviewChained(
           {
             abortSignal: run.abortController.signal,
-            prompt,
+            phase1Prompt,
+            phase2Prompt: (phase1Out) =>
+              buildPhase2Prompt({
+                phase1Summary: phase1Out,
+                diff: workspace.diff,
+              }),
+            phase3Prompt: (phase2Out) =>
+              buildPhase3Prompt({
+                owner: context.owner,
+                repo: context.repo,
+                pullNumber: context.pullNumber,
+                title: context.title,
+                headSha: context.headSha,
+                changesOverview: phase2Out,
+                diff: workspace.diff,
+                files: workspace.reviewableFiles,
+                discussionContextMarkdown: discussionMarkdown,
+                discussionFilePath: reviewCommentsFileName,
+              }),
             workingDirectory: workspace.workingDirectory,
           },
           createChildLogger(runLogger, {
@@ -924,6 +958,7 @@ export class ReviewService {
           headSha: context.headSha,
           score: outcome.result.score,
           summary: outcome.result.summary,
+          ...(outcome.result.changesOverview ? { changesOverview: outcome.result.changesOverview } : {}),
           event: reviewEvent,
           overflowFindings,
         });
@@ -931,6 +966,7 @@ export class ReviewService {
           headSha: context.headSha,
           score: outcome.result.score,
           summary: outcome.result.summary,
+          ...(outcome.result.changesOverview ? { changesOverview: outcome.result.changesOverview } : {}),
           event: reviewEvent,
           overflowFindings: outcome.result.findings,
         });
