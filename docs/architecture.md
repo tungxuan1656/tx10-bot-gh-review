@@ -17,8 +17,8 @@ flowchart LR
 - **Webhook server** verifies `x-hub-signature-256`, normalizes `pull_request` webhook metadata, emits structured lifecycle logs, and dispatches asynchronous review work.
 - **Review service** routes every normalized `pull_request` action to one of three outcomes: `trigger_review`, `ignored`, or `cancel_requested`. It enqueues all work into a single in-process global FIFO queue shared across repositories, triggers reviews for `review_requested` (bot requested) and `synchronize` (bot still requested), and supports best-effort cancellation.
 - **GitHub review platform** authenticates with the machine-user token, checks idempotency markers, and submits reviews or fallback comments.
-- **Temporary workspace manager** creates an isolated git directory, fetches the exact `baseSha` and `headSha`, checks out the PR head, copies `resources/review-skills/*` into `.agents/skills`, and collects the reviewable diff plus current file contents.
-- **Codex runner** shells out to `codex exec --cd <workspace> --sandbox read-only` with a JSON Schema file so the final response is machine-validated before any GitHub action is taken, and supports hard process cancellation for preempted runs.
+- **Temporary workspace manager** creates an isolated git directory, fetches the exact `baseSha` and `headSha`, checks out the PR head, copies `resources/review-skills/*` into `.agents/skills`, and prepares deterministic refs (`refs/codex-review/base` and `refs/codex-review/head`) for in-workspace git inspection.
+- **Codex runner** shells out to `codex exec --cd <workspace> --sandbox workspace-write` with a JSON Schema file so the final response is machine-validated before any GitHub action is taken, and supports hard process cancellation for preempted runs.
 
 ## Sequence Diagram
 
@@ -35,7 +35,7 @@ sequenceDiagram
   Bot->>Bot: Route action to trigger_review / ignored / cancel_requested
   Bot->>Bot: Prepare temporary git workspace for base/head SHAs
   Bot->>Bot: Copy bundled review skills into temp workspace
-  Bot->>Codex: Submit filtered git diff + head file content prompt
+  Bot->>Codex: Submit repo-first prompt (Codex reads git diff and files in workspace)
   Codex-->>Bot: Structured JSON review result
   Bot->>Bot: Validate decision against findings and map to REQUEST_CHANGES / APPROVE
   Bot->>GitHub: Submit review or fallback comment
@@ -48,7 +48,7 @@ sequenceDiagram
 - Review execution is queue-driven: all review requests are serialized through one global FIFO worker.
 - `synchronize` events trigger a re-review only when the bot remains in `pull_request.requested_reviewers`.
 - If a newer commit arrives for the same PR while a run is active, the run is preempted and the active Codex process is canceled.
-- Each run fetches PR discussion history from GitHub (GraphQL-first with REST fallback), stores it as `pr-review-comments.md`, and includes it in the prompt context.
+- Each run fetches PR discussion history from GitHub (GraphQL-first with REST fallback), stores it as `pr-review-comments.md`, and prompts Codex to read it from workspace.
 - `review_request_removed` requests a best-effort in-memory cancellation for the active run and removes queued work for that PR.
 - Approved lock can skip subsequent commits on a PR after a bot `APPROVE` when enabled.
 - Codex output is trusted only after JSON Schema validation.

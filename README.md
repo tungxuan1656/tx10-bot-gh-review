@@ -1,6 +1,6 @@
 # AI Code Review Bot
 
-AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, routes all review work through a single global FIFO queue, materializes each pull request into a temporary git workspace, builds a constrained AI review request from the exact `baseSha..headSha` diff plus head file contents, and publishes one GitHub review per head SHA.
+AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, routes all review work through a single global FIFO queue, materializes each pull request into a temporary git workspace, instructs Codex to inspect the exact `baseSha..headSha` diff directly via git commands inside that workspace, and publishes one GitHub review per head SHA.
 
 ## MVP Scope
 
@@ -9,7 +9,7 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 - Diff filtering for `.js`, `.jsx`, `.ts`, `.tsx`, `.py`, and `.java`
 - Temporary git workspace checkout at the webhook `headSha`
 - Review skill bundle injection from `resources/review-skills/*` into the temp workspace `.agents/skills`
-- Pull request discussion context fetch (GraphQL-first, REST fallback) persisted as `pr-review-comments.md` and injected into the prompt
+- Pull request discussion context fetch (GraphQL-first, REST fallback) persisted as `pr-review-comments.md` and referenced by the prompt for in-workspace reading
 - Codex CLI invocation in the temporary workspace with a strict JSON output contract
 - In-flight preemption for the same PR when a newer head SHA arrives, including hard cancel of the active Codex process
 - Deterministic GitHub review publishing:
@@ -34,6 +34,7 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 | `GITHUB_BOT_LOGIN` | Yes | Exact GitHub login of the machine user reviewer |
 | `GITHUB_WEBHOOK_SECRET` | Yes | Shared secret used to verify repository or organization webhooks |
 | `CODEX_BIN` | No | Codex CLI binary path. Defaults to `codex`. |
+| `CODEX_MODEL` | No | Codex model passed as `--model`. Defaults to `gpt-5.3-codex`. |
 | `CODEX_TIMEOUT_MS` | No | Max review runtime per Codex invocation in milliseconds. Defaults to `900000` (15 minutes). |
 | `REVIEW_APPROVED_LOCK_ENABLED` | No | When `true`, commits pushed after a bot `APPROVE` are ignored. Defaults to `true`. |
 | `REVIEW_DISCUSSION_CACHE_DIR` | No | Directory for cached PR discussion markdown snapshots. Defaults to a temp directory. |

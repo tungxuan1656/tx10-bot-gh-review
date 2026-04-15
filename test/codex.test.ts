@@ -219,7 +219,7 @@ describe('createCodexRunner', () => {
     )
   })
 
-  it('passes the workspace directory and read-only sandbox to codex exec', async () => {
+  it('passes workspace, sandbox, and output schema to codex exec', async () => {
     const { binPath, capturePath } = await createFakeCodexBinary()
     process.env.TEST_CAPTURE_PATH = capturePath
     const logger = {
@@ -259,8 +259,8 @@ describe('createCodexRunner', () => {
     expect(capture.args).toContain('--cd')
     expect(capture.args).toContain('/tmp/pr-workspace')
     expect(capture.args).toContain('--sandbox')
-    expect(capture.args).toContain('read-only')
-    expect(capture.args).not.toContain('--output-schema')
+    expect(capture.args).toContain('workspace-write')
+    expect(capture.args).toContain('--output-schema')
     expect(capture.args).toContain('--output-last-message')
     expect(capture.stdin).toBe('Review this diff')
     expect(capture.cwd).toBe(process.cwd())

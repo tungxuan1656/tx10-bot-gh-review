@@ -1,12 +1,9 @@
 import type { ReviewableFile } from './types.js'
 
-const maxFiles = 20
-const maxDiffCharacters = 20_000
-const maxPatchCharacters = 4_000
-const maxContentCharacters = 6_000
-const maxDiscussionCharacters = 20_000
-const maxPhase1OutputCharacters = 4_000
-const maxPhase2OutputCharacters = 6_000
+const maxPhase1OutputCharacters = 3_000
+const maxPhase2OutputCharacters = 4_000
+const baseRefName = 'refs/codex-review/base'
+const headRefName = 'refs/codex-review/head'
 
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) {
@@ -45,15 +42,17 @@ export function buildPhase1Prompt(input: {
 }
 
 /** Phase 2: Ask Codex to analyse the diff in context of the phase-1 summary. Returns free-form markdown. */
-export function buildPhase2Prompt(input: {
-  phase1Summary: string
-  diff: string
-}): string {
+export function buildPhase2Prompt(input: { phase1Summary: string }): string {
   return [
     'You are a senior engineer reviewing a pull request.',
-    'You have already summarised the PR metadata. Now read the unified diff below.',
+    'You have already summarised the PR metadata.',
+    `Now inspect the repository state directly using git between ${baseRefName} and ${headRefName}.`,
     '',
-    'Using both the summary and the diff, describe:',
+    'Run these commands in the workspace:',
+    `1. git diff --name-status ${baseRefName} ${headRefName}`,
+    `2. git diff --unified=5 ${baseRefName} ${headRefName}`,
+    '',
+    'Using both the summary and the git diff output, describe:',
     '- The exact scope of changes (which modules, layers, APIs are touched)',
     '- The intent behind the changes (what problem they solve)',
     '- Any notable added, removed, or modified features or behaviours',
@@ -62,9 +61,6 @@ export function buildPhase2Prompt(input: {
     '',
     '## PR Summary (from phase 1)',
     truncate(input.phase1Summary, maxPhase1OutputCharacters),
-    '',
-    '## Unified Diff',
-    truncate(input.diff, maxDiffCharacters),
   ].join('\n')
 }
 
@@ -76,37 +72,27 @@ export function buildPhase3Prompt(input: {
   title: string
   headSha: string
   changesOverview: string
-  diff: string
-  files: ReviewableFile[]
-  discussionContextMarkdown: string
   discussionFilePath: string
 }): string {
-  const selectedFiles = input.files.slice(0, maxFiles)
-
-  const fileBlocks = selectedFiles
-    .map((file) => {
-      return [
-        `FILE: ${file.path}`,
-        '',
-        'PATCH:',
-        truncate(file.patch, maxPatchCharacters),
-        '',
-        'CURRENT FILE CONTENT:',
-        truncate(file.content, maxContentCharacters),
-      ].join('\n')
-    })
-    .join('\n\n---\n\n')
-
   return [
-    'You are reviewing a GitHub pull request diff.',
+    'You are reviewing a GitHub pull request.',
     'Use the `code-review` skill available in the workspace and follow it strictly for a rigorous review.',
     'Return JSON only.',
     'Do not include markdown fences or any prose outside the JSON object.',
     'Focus on concrete bugs, correctness issues, security issues, and missing validation.',
     'Ignore purely stylistic suggestions.',
-    'Only report findings when you are confident and can point to a specific file path and line number visible in the provided diff context.',
+    'Only report findings when you are confident and can point to a specific file path and line number visible in the diff context you inspect.',
+    'Do not speculate. If evidence is insufficient, omit the finding.',
     `Before writing findings, read ${input.discussionFilePath} from the repository root and use it as historical context.`,
     'Treat resolved conversations and maintainer explanations as prior context, and avoid repeating issues that are already resolved.',
+    '',
+    'Repository inspection instructions:',
+    `- First run: git diff --name-status ${baseRefName} ${headRefName}`,
+    `- Then inspect full patch: git diff --unified=5 ${baseRefName} ${headRefName}`,
+    `- For a specific file patch: git diff --unified=5 ${baseRefName} ${headRefName} -- <path>`,
+    `- For current head content: git show ${headRefName}:<path>`,
+    `- Only review files changed between ${baseRefName} and ${headRefName}.`,
+    '- Every finding must reference a changed file and a line grounded in a visible diff hunk.',
     '',
     'Score rubric:',
     '- 0 means extremely risky or broken.',
@@ -122,16 +108,9 @@ export function buildPhase3Prompt(input: {
     `Pull Request: #${input.pullNumber}`,
     `Title: ${input.title}`,
     `Head SHA: ${input.headSha}`,
-    `Reviewable files included: ${selectedFiles.length}/${input.files.length}`,
     '',
     '## Changes Overview (from diff analysis)',
     truncate(input.changesOverview, maxPhase2OutputCharacters),
-    '',
-    'Unified diff (context=5):',
-    truncate(input.diff, maxDiffCharacters),
-    '',
-    `Historical PR discussion snapshot (also written to ${input.discussionFilePath}):`,
-    truncate(input.discussionContextMarkdown, maxDiscussionCharacters),
     '',
     'Required JSON shape:',
     JSON.stringify(
@@ -154,9 +133,6 @@ export function buildPhase3Prompt(input: {
       null,
       2,
     ),
-    '',
-    'Files:',
-    fileBlocks,
   ].join('\n')
 }
 
@@ -176,7 +152,12 @@ export function buildReviewPrompt(input: {
   discussionFilePath: string
 }): string {
   return buildPhase3Prompt({
-    ...input,
+    owner: input.owner,
+    repo: input.repo,
+    pullNumber: input.pullNumber,
+    title: input.title,
+    headSha: input.headSha,
+    discussionFilePath: input.discussionFilePath,
     changesOverview: '',
   })
 }

@@ -29,6 +29,7 @@ const envSchema = z.object({
   GITHUB_BOT_LOGIN: z.string().min(1, 'GITHUB_BOT_LOGIN is required'),
   GITHUB_WEBHOOK_SECRET: z.string().min(1, 'GITHUB_WEBHOOK_SECRET is required'),
   CODEX_BIN: z.string().min(1).default('codex'),
+  CODEX_MODEL: z.string().min(1).default('gpt-5.3-codex'),
   CODEX_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   REVIEW_APPROVED_LOCK_ENABLED: boolStringSchema.default('true'),
   REVIEW_DISCUSSION_CACHE_DIR: z
@@ -51,6 +52,7 @@ export type AppConfig = {
   githubBotLogin: string
   githubWebhookSecret: string
   codexBin: string
+  codexModel: string
   codexTimeoutMs: number
   reviewApprovedLockEnabled: boolean
   reviewDiscussionCacheDir: string
@@ -69,6 +71,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     githubBotLogin: parsed.GITHUB_BOT_LOGIN,
     githubWebhookSecret: parsed.GITHUB_WEBHOOK_SECRET,
     codexBin: parsed.CODEX_BIN,
+    codexModel: parsed.CODEX_MODEL,
     codexTimeoutMs: parsed.CODEX_TIMEOUT_MS,
     reviewApprovedLockEnabled: parsed.REVIEW_APPROVED_LOCK_ENABLED === 'true',
     reviewDiscussionCacheDir: parsed.REVIEW_DISCUSSION_CACHE_DIR,

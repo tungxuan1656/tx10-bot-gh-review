@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -7,7 +7,62 @@ import { reviewResultSchema } from './types.js'
 import type { AppLogger } from '../logger.js'
 import type { CodexReviewOutcome } from './types.js'
 
-const maxLoggedOutputCharacters = 1_000
+const maxLoggedOutputCharacters = 2_000
+const maxLoggedOutputTailCharacters = 1_000
+
+const codexOutputJsonSchema = {
+  type: 'object',
+  properties: {
+    summary: {
+      type: 'string',
+      minLength: 1,
+    },
+    changesOverview: {
+      type: 'string',
+    },
+    score: {
+      type: 'number',
+      minimum: 0,
+      maximum: 10,
+    },
+    decision: {
+      type: 'string',
+      enum: ['approve', 'request_changes'],
+    },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: {
+            type: 'string',
+            enum: ['critical', 'major', 'minor', 'improvement'],
+          },
+          path: {
+            type: 'string',
+            minLength: 1,
+          },
+          line: {
+            type: 'integer',
+            minimum: 1,
+          },
+          title: {
+            type: 'string',
+            minLength: 1,
+          },
+          comment: {
+            type: 'string',
+            minLength: 1,
+          },
+        },
+        required: ['severity', 'path', 'line', 'title', 'comment'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['summary', 'score', 'decision', 'findings'],
+  additionalProperties: false,
+} as const
 
 /**
  * Strip optional markdown code fences that some models emit around JSON output
@@ -17,6 +72,38 @@ function stripJsonFences(text: string): string {
   const trimmed = text.trim()
   const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/i.exec(trimmed)
   return fenced?.[1]?.trim() ?? trimmed
+}
+
+function detectFailureHint(stderr: string): string | undefined {
+  const lower = stderr.toLowerCase()
+
+  if (
+    lower.includes('context length') ||
+    lower.includes('maximum context') ||
+    lower.includes('too many tokens') ||
+    lower.includes('input is too long') ||
+    lower.includes('prompt is too long')
+  ) {
+    return 'possible_prompt_too_large'
+  }
+
+  if (lower.includes('rate limit') || lower.includes('429')) {
+    return 'possible_rate_limited'
+  }
+
+  if (
+    lower.includes('unauthorized') ||
+    lower.includes('forbidden') ||
+    lower.includes('authentication')
+  ) {
+    return 'possible_auth_error'
+  }
+
+  if (lower.includes('not found') || lower.includes('no such file')) {
+    return 'possible_missing_resource'
+  }
+
+  return undefined
 }
 
 export type CodexRunner = {
@@ -44,6 +131,7 @@ export type CodexRunner = {
 export function createCodexRunner(input: {
   bin: string
   logger: AppLogger
+  model?: string
   timeoutMs?: number
 }): CodexRunner {
   const timeoutMs = input.timeoutMs ?? 900_000
@@ -60,6 +148,20 @@ export function createCodexRunner(input: {
     }
 
     return `${trimmed.slice(0, maxLoggedOutputCharacters)}...[truncated]`
+  }
+
+  function summarizeOutputTail(text: string): string | undefined {
+    const trimmed = text.trim()
+
+    if (trimmed.length === 0) {
+      return undefined
+    }
+
+    if (trimmed.length <= maxLoggedOutputTailCharacters) {
+      return trimmed
+    }
+
+    return `...[truncated]${trimmed.slice(-maxLoggedOutputTailCharacters)}`
   }
 
   /**
@@ -87,17 +189,48 @@ export function createCodexRunner(input: {
 
     try {
       const outputPath = path.join(tempDirectory, 'result.json')
+      const outputSchemaPath = path.join(
+        tempDirectory,
+        'codex-output-schema.json',
+      )
+
+      if (phaseInput.validateJson) {
+        await writeFile(
+          outputSchemaPath,
+          JSON.stringify(codexOutputJsonSchema, null, 2),
+          'utf8',
+        )
+      }
+
       const args = [
         'exec',
         '--cd',
         phaseInput.workingDirectory,
+        ...(input.model ? ['--model', input.model] : []),
         '--sandbox',
-        'read-only',
+        'workspace-write',
         '--skip-git-repo-check',
+        ...(phaseInput.validateJson
+          ? ['--output-schema', outputSchemaPath]
+          : []),
         '--output-last-message',
         outputPath,
         '-',
       ]
+
+      phaseInput.logger.debug(
+        {
+          component: 'codex',
+          event: 'codex.phase_started',
+          phase: phaseInput.phaseLabel,
+          promptChars: phaseInput.prompt.length,
+          status: 'started',
+          validateJson: phaseInput.validateJson,
+          model: input.model,
+          workingDirectory: phaseInput.workingDirectory,
+        },
+        'Codex phase started',
+      )
 
       const child = spawn(input.bin, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -185,16 +318,22 @@ export function createCodexRunner(input: {
       }
 
       if (exitCode !== 0) {
+        const failureHint = detectFailureHint(stderr)
+
         phaseInput.logger.warn(
           {
             component: 'codex',
             event: 'codex.failed',
             exitCode,
             durationMs: Date.now() - startedAt,
+            failureHint,
             phase: phaseInput.phaseLabel,
+            promptChars: phaseInput.prompt.length,
             reason: 'non_zero_exit',
             stderrPreview: summarizeOutput(stderr),
+            stderrTailPreview: summarizeOutputTail(stderr),
             stdoutPreview: summarizeOutput(stdout),
+            stdoutTailPreview: summarizeOutputTail(stdout),
             stderrBytes: Buffer.byteLength(stderr, 'utf8'),
             stdoutBytes: Buffer.byteLength(stdout, 'utf8'),
             status: 'failed',
@@ -249,6 +388,7 @@ export function createCodexRunner(input: {
           promptChars: reviewInput.prompt.length,
           status: 'started',
           timeoutMs,
+          model: input.model,
           workingDirectory: reviewInput.workingDirectory,
         },
         'Codex review started',
@@ -347,6 +487,7 @@ export function createCodexRunner(input: {
           event: 'codex.chained_started',
           status: 'started',
           timeoutMs,
+          model: input.model,
           workingDirectory: chainedInput.workingDirectory,
         },
         'Codex chained review started',

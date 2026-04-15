@@ -32,8 +32,10 @@ Expected response:
 ### Codex failure comment appears on the PR
 
 - Check that `CODEX_BIN` resolves to a working Codex CLI binary
+- Check that `CODEX_MODEL` is set to a supported model in your environment
 - Run `codex --help` on the host to confirm availability
 - Inspect service logs for timeout or non-zero exit warnings
+- For non-zero exits, inspect `failureHint`, `stderrTailPreview`, and `stdoutTailPreview` on `codex.failed`
 - Confirm `resources/review-skills/` exists in the deployed service and can be copied into the temp workspace
 
 ### No review was published
@@ -73,12 +75,13 @@ Main lifecycle logs in order:
 3. `Webhook routed`
 4. `Review started`
 5. `Review idempotency checked`
-6. `Review files listed`
-7. `Review files hydrated`
-8. `Review Codex step completed` or `Review Codex step failed`
-9. `Review publish started`
-10. `Review published` or `Review publish fallback`
-11. `Review completed`
+6. `Review pr_info fetched`
+7. `Review workspace prepared`
+8. `Review prompts built`
+9. `Review Codex step completed` or `Review Codex step failed`
+10. `Review publish started`
+11. `Review published` or `Review publish fallback`
+12. `Review completed`
 
 Use `runKey` to trace one request end-to-end. The format is:
 

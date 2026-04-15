@@ -938,7 +938,6 @@ export class ReviewService {
             phase2Prompt: (phase1Out) =>
               buildPhase2Prompt({
                 phase1Summary: phase1Out,
-                diff: workspace.diff,
               }),
             phase3Prompt: (phase2Out) =>
               buildPhase3Prompt({
@@ -948,9 +947,6 @@ export class ReviewService {
                 title: context.title,
                 headSha: context.headSha,
                 changesOverview: phase2Out,
-                diff: workspace.diff,
-                files: workspace.reviewableFiles,
-                discussionContextMarkdown: discussionMarkdown,
                 discussionFilePath: reviewCommentsFileName,
               }),
             workingDirectory: workspace.workingDirectory,
