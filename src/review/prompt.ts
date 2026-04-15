@@ -139,7 +139,7 @@ export function buildPhase3Prompt(input: {
       {
         summary: 'string',
         changesOverview:
-          'string (copy the changes overview above, or refine it)',
+          'string (copy/refine the overview above, or use an empty string if no extra overview is needed)',
         score: 0,
         decision: 'approve',
         findings: [

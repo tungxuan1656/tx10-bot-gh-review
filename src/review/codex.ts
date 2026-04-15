@@ -60,7 +60,7 @@ const codexOutputJsonSchema = {
       },
     },
   },
-  required: ['summary', 'score', 'decision', 'findings'],
+  required: ['summary', 'changesOverview', 'score', 'decision', 'findings'],
   additionalProperties: false,
 } as const
 
