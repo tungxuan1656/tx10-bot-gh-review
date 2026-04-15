@@ -241,6 +241,7 @@ export function createCodexRunner(input: {
       const stderrChunks: Buffer[] = []
       let cancelled = false
       let abortListener: (() => void) | undefined
+      let stdinWriteError: unknown
 
       const killChildProcess = () => {
         if (child.exitCode !== null) return
@@ -262,7 +263,14 @@ export function createCodexRunner(input: {
 
       child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk))
       child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk))
-      child.stdin.end(phaseInput.prompt)
+      child.stdin.on('error', (error: unknown) => {
+        stdinWriteError = error
+      })
+      try {
+        child.stdin.end(phaseInput.prompt)
+      } catch (error) {
+        stdinWriteError = error
+      }
 
       let timedOut = false
       const timeout = setTimeout(() => {
@@ -282,6 +290,34 @@ export function createCodexRunner(input: {
 
       const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
       const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
+
+      if (stdinWriteError && !timedOut && !cancelled) {
+        const message =
+          stdinWriteError instanceof Error
+            ? stdinWriteError.message
+            : typeof stdinWriteError === 'string'
+              ? stdinWriteError
+              : (() => {
+                  try {
+                    return JSON.stringify(stdinWriteError) ?? 'Unknown stdin write error'
+                  } catch {
+                    return 'Unknown stdin write error'
+                  }
+                })()
+
+        phaseInput.logger.warn(
+          {
+            component: 'codex',
+            durationMs: Date.now() - startedAt,
+            event: 'codex.stdin_write_failed',
+            phase: phaseInput.phaseLabel,
+            reason: 'stdin_write_failed',
+            message,
+            status: 'failed',
+          },
+          'Codex stdin write failed',
+        )
+      }
 
       if (timedOut) {
         phaseInput.logger.error(
