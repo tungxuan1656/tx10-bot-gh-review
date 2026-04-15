@@ -42,16 +42,13 @@ async function createFakeCodexBinary(): Promise<{
       "  process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));",
       "  process.stdin.on('error', reject);",
       '});',
-      "const schemaIndex = args.indexOf('--output-schema');",
       "const outputIndex = args.indexOf('--output-last-message');",
-      'const schemaPath = args[schemaIndex + 1];',
       'const outputPath = args[outputIndex + 1];',
       'await writeFile(',
       '  process.env.TEST_CAPTURE_PATH,',
       '  JSON.stringify({',
       '    args,',
       '    cwd: process.cwd(),',
-      "    schema: JSON.parse(await readFile(schemaPath, 'utf8')),",
       '    stdin,',
       '  }),',
       ');',
@@ -222,7 +219,7 @@ describe('createCodexRunner', () => {
     )
   })
 
-  it('passes the workspace directory, read-only sandbox, and output schema to codex exec', async () => {
+  it('passes workspace, sandbox, and output schema to codex exec', async () => {
     const { binPath, capturePath } = await createFakeCodexBinary()
     process.env.TEST_CAPTURE_PATH = capturePath
     const logger = {
@@ -255,11 +252,6 @@ describe('createCodexRunner', () => {
     const capture = JSON.parse(await readFile(capturePath, 'utf8')) as {
       args: string[]
       cwd: string
-      schema: {
-        properties: {
-          findings: unknown
-        }
-      }
       stdin: string
     }
 
@@ -267,11 +259,10 @@ describe('createCodexRunner', () => {
     expect(capture.args).toContain('--cd')
     expect(capture.args).toContain('/tmp/pr-workspace')
     expect(capture.args).toContain('--sandbox')
-    expect(capture.args).toContain('read-only')
+    expect(capture.args).toContain('workspace-write')
     expect(capture.args).toContain('--output-schema')
     expect(capture.args).toContain('--output-last-message')
     expect(capture.stdin).toBe('Review this diff')
-    expect(capture.schema.properties.findings).toBeDefined()
     expect(capture.cwd).toBe(process.cwd())
   })
 

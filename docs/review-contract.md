@@ -25,13 +25,17 @@ The Codex prompt contract keeps the review pipeline deterministic. The bot asks 
 
 ## Prompt Rules
 
-- Build the prompt from the exact temporary workspace diff between `baseSha` and `headSha`
 - Copy `resources/review-skills/*` into the temporary workspace `.agents/skills` before invoking Codex
 - Instruct Codex to use the bundled `code-review` skill
+- Instruct Codex to inspect changes directly from workspace refs with git commands:
+  - `git diff --name-status refs/codex-review/base refs/codex-review/head`
+  - `git diff --unified=5 refs/codex-review/base refs/codex-review/head`
+  - `git show refs/codex-review/head:<path>` when deeper file context is needed
+- Instruct Codex to read `pr-review-comments.md` from workspace for historical context
 - JSON only
 - No markdown fences
 - No stylistic-only findings
-- Only findings backed by a specific file path and line number
+- Only findings backed by a specific file path and line number grounded in visible diff hunks
 - Focus on correctness, bugs, security, and missing validation
 
 ## Deterministic Decision Mapping

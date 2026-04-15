@@ -427,11 +427,27 @@ describe('ReviewService', () => {
 
     const reviewInput = reviewChained.mock.calls[0]?.[0] as {
       phase1Prompt: string
+      phase2Prompt: (phase1Output: string) => string
+      phase3Prompt: (phase2Output: string) => string
       workingDirectory: string
     }
     expect(reviewChained).toHaveBeenCalledTimes(1)
     expect(reviewInput.workingDirectory).toBe('/tmp/codex-review-workspace')
     expect(reviewInput.phase1Prompt).toContain('pr-info.yaml')
+    const phase2Prompt = reviewInput.phase2Prompt('phase1-summary')
+    const phase3Prompt = reviewInput.phase3Prompt('phase2-overview')
+    expect(phase2Prompt).toContain(
+      "git diff --name-status refs/codex-review/base refs/codex-review/head -- 'src/app.ts'",
+    )
+    expect(phase2Prompt).toContain(
+      "git diff --unified=5 refs/codex-review/base refs/codex-review/head -- 'src/app.ts' | head -c 80000",
+    )
+    expect(phase3Prompt).toContain(
+      "git diff --name-status refs/codex-review/base refs/codex-review/head -- 'src/app.ts'",
+    )
+    expect(phase3Prompt).toContain(
+      "git diff --unified=5 refs/codex-review/base refs/codex-review/head -- 'src/app.ts' | head -c 80000",
+    )
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
     expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
   })
