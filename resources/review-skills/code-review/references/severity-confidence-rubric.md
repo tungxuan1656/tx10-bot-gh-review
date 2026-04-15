@@ -67,20 +67,21 @@ Strong evidence with limited inference. Appropriate for most major issues.
 
 Bounded, lower-risk findings or improvements. Use sparingly.
 
-### Below 70
+### Below 60
 
-Do not report as a finding by default. Convert it into an open question or omit it.
+Do not report. Convert to an open question or omit.
 
 ## Minimum Reporting Thresholds
 
 - `critical` requires `90+`
 - `major` requires `80+`
-- `minor` requires `75+`
-- `improvement` requires `70+`
+- `minor` requires `65+`
+- `improvement` requires `60+`
 
 ## Scoring Rules
 
-- Lower confidence when runtime verification, validation commands, or surrounding context are missing.
-- Prefer one representative finding over multiple low-confidence duplicates.
+- Lower confidence when surrounding context (callers, contracts, adjacent tests) is absent from the provided files. Static analysis without test execution is the assumed baseline; do not apply an additional penalty solely for lack of runtime verification.
+- Prefer one representative finding over multiple low-confidence duplicates. When the same pattern recurs, report a primary finding and list all affected locations.
 - If the issue depends on an assumption that cannot be verified from the code or available evidence, do not report it as a finding.
-- If a bug is reproducible through a direct code path trace or failing command, confidence should usually be `90+`.
+- If a bug is reproducible through a direct code path trace, confidence should usually be `90+`.
+- For minor and improvement findings, prefer reporting over silence. A finding with borderline confidence and real evidence is better than a silent omission.

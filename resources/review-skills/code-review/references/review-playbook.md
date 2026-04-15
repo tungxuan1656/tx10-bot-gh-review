@@ -14,24 +14,20 @@ Prevent semantic bugs, design mistakes, regressions, performance problems, secur
    - Use the real base/head refs or PR base/head metadata when available.
 3. List changed files and affected flows.
 4. Mark high-risk areas early.
-   - Form or payload handling
-   - Query or store bridges
-   - State ownership
+   - Input or payload handling
+   - State ownership and source of truth
    - Authentication or permission paths
-   - Error handling
-   - i18n
-   - Polling, timers, concurrency, retries
-   - Data mapping and contract transformations
+   - Error handling and propagation
+   - Async operations, polling, timers, concurrency, retries
+   - Data mapping, contract transformations, and type boundaries
+5. Verify the PR description matches the actual scope of changes.
+   - If the stated intent is narrower, broader, or different from what the diff shows, flag it.
 
-## Phase 2: Objective Validation Baseline
+## Phase 2: Available Validation Signals
 
-1. Run the narrowest relevant checks when practical.
-   - Lint
-   - Typecheck
-   - Tests
-   - CI or status checks
-2. Capture failures as evidence, not as guesses.
-3. Do not stop at automation. Manual review is still required even when checks pass.
+1. Note any validation results already available as context: CI status, prior review comments, or linked test output.
+2. Do not assume checks passed if they are not mentioned. Note absent signals in `Missing Validation`.
+3. Proceed with full manual review regardless of signal availability. External checks do not replace inspection.
 
 ## Phase 3: Full-Context Reading
 
@@ -55,12 +51,12 @@ Keep the summary factual. Do not bury findings inside it.
 
 For each high-risk flow, inspect:
 
-1. User journey
-   - What the user does and what must happen next.
+1. Trigger and flow
+   - What initiates the action and what must happen at each subsequent step.
 2. Action contract
-   - Label -> handler -> payload -> side effect -> expected result.
-3. Payload matrix
-   - Each user input maps to a request field, state transition, or explicit omission rule.
+   - Input → handler → computation → side effect → expected output.
+3. Input contract
+   - Each input field maps to a processing step, transformation, or explicit omission rule.
 4. Failure matrix
    - Empty, invalid, denied, timeout, network failure, retry, and recovery behavior.
 
@@ -77,6 +73,7 @@ Apply these probes wherever relevant:
 - `Action reality`: every visible control has a real effect and correct semantics.
 - `Regression`: changed logic and bug fixes have executable test coverage.
 - `Fix closure`: follow-up patches actually resolve prior findings end to end.
+- `Token-level scan`: after the semantic walkthrough, scan every line of the diff once more for small issues that holistic reading misses — magic literals, missing `void` or `await`, unsafe `!` assertions, suspicious type casts, off-by-one index expressions, and wrong operator choices.
 
 ## Phase 7: Rule Application
 
@@ -100,7 +97,7 @@ For each potential finding:
 2. Decide whether it is a defect or only an improvement.
 3. Assign severity.
 4. Assign confidence.
-5. Skip it if it does not meet the confidence threshold for reporting.
+5. For critical and major findings, require concrete evidence before reporting. For minor and improvement findings, prefer reporting over silence: a finding with borderline confidence and real evidence is better than a silent omission.
 
 ## Phase 9: Final Review
 
