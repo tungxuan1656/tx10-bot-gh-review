@@ -2,6 +2,7 @@ import type { ReviewableFile } from './types.js'
 
 const maxPhase1OutputCharacters = 3_000
 const maxPhase2OutputCharacters = 4_000
+const maxPhaseDiffInputCharacters = 80_000
 const baseRefName = 'refs/codex-review/base'
 const headRefName = 'refs/codex-review/head'
 
@@ -11,6 +12,14 @@ function truncate(text: string, maxLength: number): string {
   }
 
   return `${text.slice(0, maxLength)}\n...[truncated]`
+}
+
+function shellQuotePath(path: string): string {
+  return `'${path.replace(/'/g, `'\\''`)}'`
+}
+
+function formatReviewablePathspec(paths: string[]): string {
+  return paths.map((filePath) => shellQuotePath(filePath)).join(' ')
 }
 
 /** Phase 1: Ask Codex to summarise the PR from pr-info.yaml. Returns free-form markdown. */
@@ -42,15 +51,21 @@ export function buildPhase1Prompt(input: {
 }
 
 /** Phase 2: Ask Codex to analyse the diff in context of the phase-1 summary. Returns free-form markdown. */
-export function buildPhase2Prompt(input: { phase1Summary: string }): string {
+export function buildPhase2Prompt(input: {
+  phase1Summary: string
+  reviewablePaths: string[]
+}): string {
+  const pathspec = formatReviewablePathspec(input.reviewablePaths)
+
   return [
     'You are a senior engineer reviewing a pull request.',
     'You have already summarised the PR metadata.',
     `Now inspect the repository state directly using git between ${baseRefName} and ${headRefName}.`,
+    'Only inspect supported reviewable files passed in the pathspec.',
     '',
     'Run these commands in the workspace:',
-    `1. git diff --name-status ${baseRefName} ${headRefName}`,
-    `2. git diff --unified=5 ${baseRefName} ${headRefName}`,
+    `1. git diff --name-status ${baseRefName} ${headRefName} -- ${pathspec}`,
+    `2. git diff --unified=5 ${baseRefName} ${headRefName} -- ${pathspec} | head -c ${maxPhaseDiffInputCharacters}`,
     '',
     'Using both the summary and the git diff output, describe:',
     '- The exact scope of changes (which modules, layers, APIs are touched)',
@@ -73,7 +88,10 @@ export function buildPhase3Prompt(input: {
   headSha: string
   changesOverview: string
   discussionFilePath: string
+  reviewablePaths: string[]
 }): string {
+  const pathspec = formatReviewablePathspec(input.reviewablePaths)
+
   return [
     'You are reviewing a GitHub pull request.',
     'Use the `code-review` skill available in the workspace and follow it strictly for a rigorous review.',
@@ -87,11 +105,11 @@ export function buildPhase3Prompt(input: {
     'Treat resolved conversations and maintainer explanations as prior context, and avoid repeating issues that are already resolved.',
     '',
     'Repository inspection instructions:',
-    `- First run: git diff --name-status ${baseRefName} ${headRefName}`,
-    `- Then inspect full patch: git diff --unified=5 ${baseRefName} ${headRefName}`,
+    `- First run: git diff --name-status ${baseRefName} ${headRefName} -- ${pathspec}`,
+    `- Then inspect full patch: git diff --unified=5 ${baseRefName} ${headRefName} -- ${pathspec} | head -c ${maxPhaseDiffInputCharacters}`,
     `- For a specific file patch: git diff --unified=5 ${baseRefName} ${headRefName} -- <path>`,
     `- For current head content: git show ${headRefName}:<path>`,
-    `- Only review files changed between ${baseRefName} and ${headRefName}.`,
+    '- Only review supported reviewable files listed in the pathspec above.',
     '- Every finding must reference a changed file and a line grounded in a visible diff hunk.',
     '',
     'Score rubric:',
@@ -159,5 +177,6 @@ export function buildReviewPrompt(input: {
     headSha: input.headSha,
     discussionFilePath: input.discussionFilePath,
     changesOverview: '',
+    reviewablePaths: input.files.map((file) => file.path),
   })
 }

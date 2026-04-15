@@ -299,7 +299,10 @@ export function createCodexRunner(input: {
               ? stdinWriteError
               : (() => {
                   try {
-                    return JSON.stringify(stdinWriteError) ?? 'Unknown stdin write error'
+                    return (
+                      JSON.stringify(stdinWriteError) ??
+                      'Unknown stdin write error'
+                    )
                   } catch {
                     return 'Unknown stdin write error'
                   }

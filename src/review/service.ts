@@ -938,6 +938,9 @@ export class ReviewService {
             phase2Prompt: (phase1Out) =>
               buildPhase2Prompt({
                 phase1Summary: phase1Out,
+                reviewablePaths: workspace.reviewableFiles.map(
+                  (file) => file.path,
+                ),
               }),
             phase3Prompt: (phase2Out) =>
               buildPhase3Prompt({
@@ -948,6 +951,9 @@ export class ReviewService {
                 headSha: context.headSha,
                 changesOverview: phase2Out,
                 discussionFilePath: reviewCommentsFileName,
+                reviewablePaths: workspace.reviewableFiles.map(
+                  (file) => file.path,
+                ),
               }),
             workingDirectory: workspace.workingDirectory,
           },
