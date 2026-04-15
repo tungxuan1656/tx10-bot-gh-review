@@ -112,4 +112,164 @@ describe("createGitHubReviewPlatform", () => {
 
     expect(result).toBe(true);
   });
+
+  it("builds discussion markdown from GraphQL review threads when available", async () => {
+    const graphql = vi.fn().mockResolvedValue({
+      repository: {
+        pullRequest: {
+          comments: {
+            nodes: [
+              {
+                author: { login: "maintainer" },
+                body: "Please clarify this section.",
+                createdAt: "2026-04-15T00:00:00Z",
+              },
+            ],
+          },
+          reviews: {
+            nodes: [
+              {
+                author: { login: "review-bot" },
+                body: "Looks good overall.",
+                state: "APPROVED",
+                submittedAt: "2026-04-15T00:01:00Z",
+              },
+            ],
+          },
+          reviewThreads: {
+            nodes: [
+              {
+                isResolved: true,
+                resolvedBy: { login: "maintainer" },
+                comments: {
+                  nodes: [
+                    {
+                      author: { login: "review-bot" },
+                      body: "Potential null access.",
+                      createdAt: "2026-04-15T00:02:00Z",
+                      line: 12,
+                      path: "src/app.ts",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const platform = createGitHubReviewPlatform(
+      {
+        githubToken: "ghp_test_token",
+        githubBotLogin: "review-bot",
+      },
+      {
+        createOctokit: () =>
+          ({
+            graphql,
+            paginate: vi.fn().mockResolvedValue([]),
+            rest: {
+              pulls: {
+                listFiles: vi.fn(),
+                listReviewComments: vi.fn(),
+                listReviews: vi.fn(),
+                createReview: vi.fn(),
+              },
+              issues: {
+                listComments: vi.fn(),
+                createComment: vi.fn(),
+              },
+              repos: {
+                getContent: vi.fn(),
+              },
+            },
+          }) as never,
+      },
+    );
+
+    const markdown = await platform.getPullRequestDiscussionMarkdown(createPullRequestContext());
+
+    expect(markdown).toContain("Source: graphql");
+    expect(markdown).toContain("resolved by @maintainer");
+    expect(markdown).toContain("src/app.ts:12");
+    expect(markdown).toContain("Potential null access.");
+  });
+
+  it("falls back to REST discussion sources when GraphQL fails", async () => {
+    const listReviews = vi.fn();
+    const listComments = vi.fn();
+    const listReviewComments = vi.fn();
+    const paginate = vi.fn((route: unknown) => {
+      if (route === listReviews) {
+        return Promise.resolve([
+          {
+            body: "REST review body",
+            state: "APPROVED",
+            submitted_at: "2026-04-15T00:01:00Z",
+            user: { login: "reviewer" },
+          },
+        ]);
+      }
+
+      if (route === listComments) {
+        return Promise.resolve([
+          {
+            body: "REST issue comment",
+            created_at: "2026-04-15T00:00:00Z",
+            user: { login: "maintainer" },
+          },
+        ]);
+      }
+
+      if (route === listReviewComments) {
+        return Promise.resolve([
+          {
+            body: "REST review thread comment",
+            created_at: "2026-04-15T00:02:00Z",
+            line: 44,
+            path: "src/server.ts",
+            user: { login: "reviewer" },
+          },
+        ]);
+      }
+
+      return Promise.resolve([]);
+    });
+
+    const platform = createGitHubReviewPlatform(
+      {
+        githubToken: "ghp_test_token",
+        githubBotLogin: "review-bot",
+      },
+      {
+        createOctokit: () =>
+          ({
+            graphql: vi.fn().mockRejectedValue(new Error("GraphQL unavailable")),
+            paginate,
+            rest: {
+              pulls: {
+                listFiles: vi.fn(),
+                listReviewComments,
+                listReviews,
+                createReview: vi.fn(),
+              },
+              issues: {
+                listComments,
+                createComment: vi.fn(),
+              },
+              repos: {
+                getContent: vi.fn(),
+              },
+            },
+          }) as never,
+      },
+    );
+
+    const markdown = await platform.getPullRequestDiscussionMarkdown(createPullRequestContext());
+
+    expect(markdown).toContain("Source: rest");
+    expect(markdown).toContain("REST issue comment");
+    expect(markdown).toContain("src/server.ts:44");
+  });
 });

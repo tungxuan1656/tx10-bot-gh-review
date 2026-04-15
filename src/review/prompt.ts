@@ -4,6 +4,7 @@ const maxFiles = 20;
 const maxDiffCharacters = 20_000;
 const maxPatchCharacters = 4_000;
 const maxContentCharacters = 6_000;
+const maxDiscussionCharacters = 20_000;
 
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) {
@@ -21,6 +22,8 @@ export function buildReviewPrompt(input: {
   headSha: string;
   diff: string;
   files: ReviewableFile[];
+  discussionContextMarkdown: string;
+  discussionFilePath: string;
 }): string {
   const selectedFiles = input.files.slice(0, maxFiles);
 
@@ -46,6 +49,8 @@ export function buildReviewPrompt(input: {
     "Focus on concrete bugs, correctness issues, security issues, and missing validation.",
     "Ignore purely stylistic suggestions.",
     "Only report findings when you are confident and can point to a specific file path and line number visible in the provided diff context.",
+    `Before writing findings, read ${input.discussionFilePath} from the repository root and use it as historical context.`,
+    "Treat resolved conversations and maintainer explanations as prior context, and avoid repeating issues that are already resolved.",
     "",
     "Score rubric:",
     "- 0 means extremely risky or broken.",
@@ -65,6 +70,9 @@ export function buildReviewPrompt(input: {
     "",
     "Unified diff (context=5):",
     truncate(input.diff, maxDiffCharacters),
+    "",
+    `Historical PR discussion snapshot (also written to ${input.discussionFilePath}):`,
+    truncate(input.discussionContextMarkdown, maxDiscussionCharacters),
     "",
     "Required JSON shape:",
     JSON.stringify(

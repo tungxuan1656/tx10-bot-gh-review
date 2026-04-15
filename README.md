@@ -1,19 +1,23 @@
 # AI Code Review Bot
 
-AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, waits until the configured bot account is explicitly requested as a reviewer, then materializes the pull request into a temporary git workspace, builds a constrained AI review request from the exact `baseSha..headSha` diff plus head file contents, and publishes one GitHub review per head SHA.
+AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, routes all review work through a single global FIFO queue, materializes each pull request into a temporary git workspace, builds a constrained AI review request from the exact `baseSha..headSha` diff plus head file contents, and publishes one GitHub review per head SHA.
 
 ## MVP Scope
 
 - Repository or organization webhook ingestion
+- Single global FIFO queue for all repositories and pull requests
 - Diff filtering for `.js`, `.jsx`, `.ts`, `.tsx`, `.py`, and `.java`
 - Temporary git workspace checkout at the webhook `headSha`
 - Review skill bundle injection from `resources/review-skills/*` into the temp workspace `.agents/skills`
+- Pull request discussion context fetch (GraphQL-first, REST fallback) persisted as `pr-review-comments.md` and injected into the prompt
 - Codex CLI invocation in the temporary workspace with a strict JSON output contract
+- In-flight preemption for the same PR when a newer head SHA arrives, including hard cancel of the active Codex process
 - Deterministic GitHub review publishing:
 - `REQUEST_CHANGES` for `critical` or `major`
 - `APPROVE` for `minor`, `improvement`, or no findings
 - `APPROVE` may still include inline comments or summary findings for non-blocking issues
-- Review only when the configured bot account is requested via `review_requested`
+- Review starts on `review_requested` for the configured bot and on `synchronize` when the bot is still requested
+- Optional approved lock: after bot `APPROVE`, subsequent commits on that PR are skipped
 
 ## Project Layout
 
@@ -31,6 +35,9 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 | `GITHUB_WEBHOOK_SECRET` | Yes | Shared secret used to verify repository or organization webhooks |
 | `CODEX_BIN` | No | Codex CLI binary path. Defaults to `codex`. |
 | `CODEX_TIMEOUT_MS` | No | Max review runtime per Codex invocation in milliseconds. Defaults to `900000` (15 minutes). |
+| `REVIEW_APPROVED_LOCK_ENABLED` | No | When `true`, commits pushed after a bot `APPROVE` are ignored. Defaults to `true`. |
+| `REVIEW_DISCUSSION_CACHE_DIR` | No | Directory for cached PR discussion markdown snapshots. Defaults to a temp directory. |
+| `REVIEW_DISCUSSION_CACHE_TTL_MS` | No | TTL for cached discussion snapshots in milliseconds. Defaults to `604800000` (7 days). |
 | `LOG_LEVEL` | No | Pino log level. Defaults to `info`. |
 | `LOG_PRETTY` | No | Pretty-print logs (`auto`, `true`, or `false`). Defaults to `auto` (enabled in development TTY). |
 | `PORT` | No | HTTP port. Defaults to `43191`. |

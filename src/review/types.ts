@@ -62,6 +62,7 @@ export type CodexReviewSuccess = {
 export type CodexReviewFailure = {
   ok: false;
   reason: string;
+  cancelled?: boolean;
 };
 
 export type CodexReviewOutcome = CodexReviewSuccess | CodexReviewFailure;

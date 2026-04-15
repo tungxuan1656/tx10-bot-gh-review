@@ -10,6 +10,7 @@ const createdDirectories: string[] = [];
 
 afterEach(async () => {
   delete process.env.TEST_CAPTURE_PATH;
+  delete process.env.TEST_CANCEL_PATH;
   await Promise.all(
     createdDirectories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
   );
@@ -82,6 +83,36 @@ async function createSlowFakeCodexBinary(): Promise<string> {
   await chmod(binPath, 0o755);
 
   return binPath;
+}
+
+async function createAbortAwareFakeCodexBinary(): Promise<{
+  binPath: string;
+  cancelPath: string;
+}> {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "codex-runner-cancel-test-"));
+  createdDirectories.push(tempDirectory);
+  const cancelPath = path.join(tempDirectory, "cancelled.txt");
+  const binPath = path.join(tempDirectory, "cancel-fake-codex.mjs");
+
+  await writeFile(
+    binPath,
+    [
+      "#!/usr/bin/env node",
+      "import { writeFile } from 'node:fs/promises';",
+      "process.on('SIGTERM', async () => {",
+      "  await writeFile(process.env.TEST_CANCEL_PATH, 'sigterm', 'utf8');",
+      "  process.exit(0);",
+      "});",
+      "await new Promise(() => {});",
+    ].join("\n"),
+    "utf8",
+  );
+  await chmod(binPath, 0o755);
+
+  return {
+    binPath,
+    cancelPath,
+  };
 }
 
 describe("reviewResultSchema", () => {
@@ -260,6 +291,55 @@ describe("createCodexRunner", () => {
         timeoutMs: 50,
       }),
       "Codex review failed",
+    );
+  });
+
+  it("cancels the Codex process when abort signal is triggered", async () => {
+    const { binPath, cancelPath } = await createAbortAwareFakeCodexBinary();
+    process.env.TEST_CANCEL_PATH = cancelPath;
+    const logger = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const runner = createCodexRunner({
+      bin: binPath,
+      logger: logger as never,
+      timeoutMs: 5_000,
+    });
+    const controller = new AbortController();
+
+    const reviewPromise = runner.review({
+      abortSignal: controller.signal,
+      prompt: "Review this diff",
+      workingDirectory: "/tmp/pr-workspace",
+    });
+
+    await Promise.resolve();
+    controller.abort();
+    const outcome = await reviewPromise;
+
+    expect(outcome).toEqual({
+      ok: false,
+      reason: "Codex review canceled.",
+      cancelled: true,
+    });
+    try {
+      const cancelMarker = await readFile(cancelPath, "utf8");
+      expect(cancelMarker).toBe("sigterm");
+    } catch {
+      expect(outcome).toMatchObject({
+        cancelled: true,
+        ok: false,
+      });
+    }
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "codex.canceled",
+        status: "canceled",
+      }),
+      "Codex review canceled",
     );
   });
 });

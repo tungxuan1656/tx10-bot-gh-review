@@ -1,3 +1,7 @@
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { determineReviewDecision, toReviewEvent } from "./decision.js";
 import { isCommentableRightSideLine } from "./patch.js";
 import { buildReviewPrompt } from "./prompt.js";
@@ -19,6 +23,7 @@ import type { ReviewWorkspaceManager } from "./workspace.js";
 type RoutedPullRequestEvent =
   | {
       status: "trigger_review";
+      reason: "review_requested" | "synchronize";
     }
   | {
       status: "cancel_requested";
@@ -26,8 +31,52 @@ type RoutedPullRequestEvent =
     }
   | {
       status: "ignored";
-      reason: "manual_only_policy" | "reviewer_mismatch" | "unsupported_action";
+      reason: "bot_not_requested" | "reviewer_mismatch" | "unsupported_action";
     };
+
+type QueueCancelReason = "cancel_requested" | "superseded_by_new_commit";
+
+type QueueRequest = {
+  enqueuedAt: number;
+  completion: Promise<void>;
+  event: NormalizedPullRequestEvent;
+  resolveCompletion: () => void;
+};
+
+type ActiveRun = {
+  abortController: AbortController;
+  cancellationLogged: boolean;
+  cancellationReason: QueueCancelReason | null;
+  context: PullRequestContext;
+  pullRequestKey: string;
+  runKey: string;
+};
+
+type ReviewServiceOptions = {
+  approvedLockEnabled?: boolean;
+  discussionCacheDirectory?: string;
+  discussionCacheTtlMs?: number;
+};
+
+const reviewCommentsFileName = "pr-review-comments.md";
+const defaultDiscussionCacheDirectory = path.join(os.tmpdir(), "tx10-review-discussions");
+const defaultDiscussionCacheTtlMs = 7 * 24 * 60 * 60 * 1_000;
+
+function createCompletion(): {
+  completion: Promise<void>;
+  resolveCompletion: () => void;
+} {
+  let resolveCompletion!: () => void;
+
+  const completion = new Promise<void>((resolve) => {
+    resolveCompletion = resolve;
+  });
+
+  return {
+    completion,
+    resolveCompletion,
+  };
+}
 
 function toPullRequestContext(event: NormalizedPullRequestEvent): PullRequestContext {
   return {
@@ -49,6 +98,10 @@ function toPullRequestContext(event: NormalizedPullRequestEvent): PullRequestCon
 
 function buildRunKey(context: PullRequestContext): string {
   return `${context.owner}/${context.repo}#${context.pullNumber}@${context.headSha}`;
+}
+
+function buildPullRequestKey(context: PullRequestContext): string {
+  return `${context.owner}/${context.repo}#${context.pullNumber}`;
 }
 
 function toInlineComment(finding: ReviewFinding): string {
@@ -159,8 +212,17 @@ function buildDecisionMismatchReason(input: {
 }
 
 export class ReviewService {
-  private readonly activeRuns = new Set<string>();
-  private readonly cancelRequestedRuns = new Set<string>();
+  private readonly queue: QueueRequest[] = [];
+  private readonly queuedByPullRequestKey = new Map<string, QueueRequest>();
+  private readonly approvedLockedPullRequests = new Set<string>();
+  private readonly latestHeadByPullRequest = new Map<string, string>();
+
+  private readonly approvedLockEnabled: boolean;
+  private readonly discussionCacheDirectory: string;
+  private readonly discussionCacheTtlMs: number;
+
+  private activeRun: ActiveRun | null = null;
+  private queueDrainInProgress = false;
 
   constructor(
     private readonly github: ReviewPlatform,
@@ -168,7 +230,13 @@ export class ReviewService {
     private readonly workspaceManager: ReviewWorkspaceManager,
     private readonly logger: AppLogger,
     private readonly botLogin: string,
-  ) {}
+    options: ReviewServiceOptions = {},
+  ) {
+    this.approvedLockEnabled = options.approvedLockEnabled ?? true;
+    this.discussionCacheDirectory =
+      options.discussionCacheDirectory ?? defaultDiscussionCacheDirectory;
+    this.discussionCacheTtlMs = options.discussionCacheTtlMs ?? defaultDiscussionCacheTtlMs;
+  }
 
   async handlePullRequestEvent(event: NormalizedPullRequestEvent): Promise<void> {
     const deliveryLogger = this.createDeliveryLogger(event);
@@ -191,11 +259,11 @@ export class ReviewService {
     }
 
     if (routedEvent.status === "cancel_requested") {
-      this.requestCancellation(event, deliveryLogger);
+      this.cancelQueuedAndActivePullRequest(event, deliveryLogger);
       return;
     }
 
-    await this.reviewPullRequest(event, deliveryLogger);
+    await this.enqueueReview(event, deliveryLogger);
   }
 
   private createDeliveryLogger(event: NormalizedPullRequestEvent): AppLogger {
@@ -216,7 +284,7 @@ export class ReviewService {
   private routePullRequestEvent(event: NormalizedPullRequestEvent): RoutedPullRequestEvent {
     if (event.actionKind === "review_requested") {
       return event.requestedReviewerLogin === this.botLogin
-        ? { status: "trigger_review" }
+        ? { status: "trigger_review", reason: "review_requested" }
         : { status: "ignored", reason: "reviewer_mismatch" };
     }
 
@@ -227,10 +295,9 @@ export class ReviewService {
     }
 
     if (event.actionKind === "synchronize") {
-      return {
-        status: "ignored",
-        reason: "manual_only_policy",
-      };
+      return event.botStillRequested === true
+        ? { status: "trigger_review", reason: "synchronize" }
+        : { status: "ignored", reason: "bot_not_requested" };
     }
 
     return {
@@ -239,15 +306,113 @@ export class ReviewService {
     };
   }
 
-  private requestCancellation(event: NormalizedPullRequestEvent, deliveryLogger: AppLogger): void {
-    const runKey = buildRunKey(toPullRequestContext(event));
+  private async enqueueReview(
+    event: NormalizedPullRequestEvent,
+    deliveryLogger: AppLogger,
+  ): Promise<void> {
+    const context = toPullRequestContext(event);
+    const pullRequestKey = buildPullRequestKey(context);
 
-    if (!this.activeRuns.has(runKey)) {
+    if (this.approvedLockEnabled && this.approvedLockedPullRequests.has(pullRequestKey)) {
+      deliveryLogger.info(
+        {
+          event: "review.queue_ignored",
+          reason: "approved_locked",
+          status: "ignored",
+        },
+        "Review queued event ignored",
+      );
+      return;
+    }
+
+    this.latestHeadByPullRequest.set(pullRequestKey, context.headSha);
+
+    const inFlightRun = this.activeRun;
+    if (
+      inFlightRun &&
+      inFlightRun.pullRequestKey === pullRequestKey &&
+      inFlightRun.context.headSha === context.headSha
+    ) {
+      deliveryLogger.info(
+        {
+          event: "review.queue_ignored",
+          reason: "duplicate_inflight",
+          runKey: inFlightRun.runKey,
+          status: "ignored",
+        },
+        "Review queued event ignored",
+      );
+      return;
+    }
+
+    const existingQueued = this.queuedByPullRequestKey.get(pullRequestKey);
+    if (existingQueued?.event.headSha === context.headSha) {
+      deliveryLogger.info(
+        {
+          event: "review.queue_ignored",
+          reason: "duplicate_queued",
+          status: "ignored",
+        },
+        "Review queued event ignored",
+      );
+      return;
+    }
+
+    if (existingQueued) {
+      this.removeQueuedRequest(pullRequestKey);
+    }
+
+    const request: QueueRequest = {
+      ...createCompletion(),
+      enqueuedAt: Date.now(),
+      event,
+    };
+
+    this.queue.push(request);
+    this.queuedByPullRequestKey.set(pullRequestKey, request);
+
+    if (
+      inFlightRun &&
+      inFlightRun.pullRequestKey === pullRequestKey &&
+      inFlightRun.context.headSha !== context.headSha
+    ) {
+      this.requestRunCancellation(inFlightRun, "superseded_by_new_commit", deliveryLogger);
+    }
+
+    deliveryLogger.info(
+      {
+        event: "review.enqueued",
+        queueLength: this.queue.length,
+        reason: "trigger_review",
+        routedReason: event.actionKind,
+        status: "queued",
+      },
+      "Review enqueued",
+    );
+
+    this.drainQueue();
+    await request.completion;
+  }
+
+  private cancelQueuedAndActivePullRequest(
+    event: NormalizedPullRequestEvent,
+    deliveryLogger: AppLogger,
+  ): void {
+    const context = toPullRequestContext(event);
+    const pullRequestKey = buildPullRequestKey(context);
+    const removedQueuedRequest = this.removeQueuedRequest(pullRequestKey);
+
+    const inFlightRun = this.activeRun;
+    const canceledActiveRun =
+      inFlightRun?.pullRequestKey === pullRequestKey
+        ? this.requestRunCancellation(inFlightRun, "cancel_requested", deliveryLogger)
+        : false;
+
+    if (!removedQueuedRequest && !canceledActiveRun) {
       deliveryLogger.info(
         {
           event: "review.cancel_missed",
           reason: "cancel_requested",
-          runKey,
           status: "cancel_missed",
         },
         "Review cancel missed",
@@ -255,38 +420,256 @@ export class ReviewService {
       return;
     }
 
-    this.cancelRequestedRuns.add(runKey);
     deliveryLogger.info(
       {
+        canceledActiveRun,
         event: "review.cancel_requested",
-        reason: "cancel_requested",
-        runKey,
+        queueLength: this.queue.length,
+        removedQueuedRequest,
         status: "cancel_requested",
       },
       "Review cancel requested",
     );
   }
 
-  private isCancellationRequested(runKey: string): boolean {
-    return this.cancelRequestedRuns.has(runKey);
-  }
-
-  private shouldStopForCancellation(runLogger: AppLogger, runKey: string, stage: string): boolean {
-    if (!this.isCancellationRequested(runKey)) {
+  private removeQueuedRequest(pullRequestKey: string): boolean {
+    const request = this.queuedByPullRequestKey.get(pullRequestKey);
+    if (!request) {
       return false;
     }
 
-    runLogger.info(
+    this.queuedByPullRequestKey.delete(pullRequestKey);
+    const requestIndex = this.queue.indexOf(request);
+    if (requestIndex >= 0) {
+      this.queue.splice(requestIndex, 1);
+    }
+
+    request.resolveCompletion();
+
+    return true;
+  }
+
+  private requestRunCancellation(
+    run: ActiveRun,
+    reason: QueueCancelReason,
+    deliveryLogger: AppLogger,
+  ): boolean {
+    if (run.abortController.signal.aborted) {
+      return false;
+    }
+
+    run.cancellationReason = reason;
+    run.abortController.abort();
+    deliveryLogger.info(
       {
-        event: "review.canceled",
-        reason: "canceled_before_publish",
-        runKey,
-        stage,
-        status: "canceled",
+        event: "review.cancel_requested",
+        reason,
+        runKey: run.runKey,
+        status: "cancel_requested",
       },
-      "Review canceled",
+      "Review cancel requested",
     );
     return true;
+  }
+
+  private shouldStopForCancellation(runLogger: AppLogger, run: ActiveRun, stage: string): boolean {
+    const latestHeadSha = this.latestHeadByPullRequest.get(run.pullRequestKey);
+
+    if (
+      latestHeadSha &&
+      latestHeadSha !== run.context.headSha &&
+      !run.abortController.signal.aborted
+    ) {
+      run.cancellationReason = "superseded_by_new_commit";
+      run.abortController.abort();
+    }
+
+    if (!run.abortController.signal.aborted) {
+      return false;
+    }
+
+    if (!run.cancellationLogged) {
+      run.cancellationLogged = true;
+      runLogger.info(
+        {
+          event: "review.canceled",
+          reason: run.cancellationReason ?? "cancel_requested",
+          runKey: run.runKey,
+          stage,
+          status: "canceled",
+        },
+        "Review canceled",
+      );
+    }
+
+    return true;
+  }
+
+  private drainQueue(): void {
+    if (this.queueDrainInProgress) {
+      return;
+    }
+
+    this.queueDrainInProgress = true;
+    void this.runQueueDrain();
+  }
+
+  private async runQueueDrain(): Promise<void> {
+    try {
+      while (this.queue.length > 0) {
+        const queuedRequest = this.queue.shift();
+        if (!queuedRequest) {
+          continue;
+        }
+
+        const context = toPullRequestContext(queuedRequest.event);
+        const pullRequestKey = buildPullRequestKey(context);
+
+        if (this.queuedByPullRequestKey.get(pullRequestKey) === queuedRequest) {
+          this.queuedByPullRequestKey.delete(pullRequestKey);
+        }
+
+        if (
+          this.approvedLockEnabled &&
+          this.approvedLockedPullRequests.has(pullRequestKey)
+        ) {
+          const logger = this.createDeliveryLogger(queuedRequest.event);
+          logger.info(
+            {
+              event: "review.queue_ignored",
+              reason: "approved_locked",
+              status: "ignored",
+            },
+            "Review queued event ignored",
+          );
+          queuedRequest.resolveCompletion();
+          continue;
+        }
+
+        const latestHeadSha = this.latestHeadByPullRequest.get(pullRequestKey);
+        if (latestHeadSha && latestHeadSha !== context.headSha) {
+          const logger = this.createDeliveryLogger(queuedRequest.event);
+          logger.info(
+            {
+              event: "review.queue_ignored",
+              latestHeadSha,
+              queuedHeadSha: context.headSha,
+              reason: "superseded_queued_head",
+              status: "ignored",
+            },
+            "Review queued event ignored",
+          );
+          queuedRequest.resolveCompletion();
+          continue;
+        }
+
+        await this.reviewPullRequest(queuedRequest.event, this.createDeliveryLogger(queuedRequest.event));
+        queuedRequest.resolveCompletion();
+      }
+    } finally {
+      this.queueDrainInProgress = false;
+      if (this.queue.length > 0) {
+        this.drainQueue();
+      }
+    }
+  }
+
+  private async cleanupExpiredDiscussionSnapshots(runLogger: AppLogger): Promise<void> {
+    const expirationThreshold = Date.now() - this.discussionCacheTtlMs;
+
+    const pullRequestDirectories = await readdir(this.discussionCacheDirectory, {
+      encoding: "utf8",
+      withFileTypes: true,
+    }).catch((error) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        return null;
+      }
+
+      runLogger.warn(
+        {
+          error,
+          event: "review.discussion_context_cleanup_failed",
+          reason: "list_directory_failed",
+          status: "failed",
+        },
+        "Review discussion context cleanup failed",
+      );
+      return null;
+    });
+
+    if (!pullRequestDirectories) {
+      return;
+    }
+
+    for (const entry of pullRequestDirectories) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const pullRequestDirectoryPath = path.join(this.discussionCacheDirectory, entry.name);
+      const files = await readdir(pullRequestDirectoryPath, {
+        encoding: "utf8",
+        withFileTypes: true,
+      }).catch(() => []);
+
+      for (const file of files) {
+        if (!file.isFile()) {
+          continue;
+        }
+
+        const filePath = path.join(pullRequestDirectoryPath, file.name);
+        const fileStats = await stat(filePath).catch(() => null);
+        if (!fileStats || fileStats.mtimeMs > expirationThreshold) {
+          continue;
+        }
+
+        await rm(filePath, { force: true }).catch(() => undefined);
+      }
+
+      const remainingFiles = await readdir(pullRequestDirectoryPath, {
+        encoding: "utf8",
+        withFileTypes: true,
+      }).catch(() => []);
+      if (remainingFiles.length === 0) {
+        await rm(pullRequestDirectoryPath, { force: true, recursive: true }).catch(() => undefined);
+      }
+    }
+  }
+
+  private async persistDiscussionContext(input: {
+    context: PullRequestContext;
+    discussionMarkdown: string;
+    runLogger: AppLogger;
+    workingDirectory: string;
+  }): Promise<void> {
+    await mkdir(this.discussionCacheDirectory, { recursive: true });
+    await this.cleanupExpiredDiscussionSnapshots(input.runLogger);
+    await mkdir(input.workingDirectory, { recursive: true });
+
+    const pullRequestDirectoryName =
+      `${input.context.owner}__${input.context.repo}__pr-${input.context.pullNumber}`;
+    const pullRequestDirectoryPath = path.join(
+      this.discussionCacheDirectory,
+      pullRequestDirectoryName,
+    );
+    await mkdir(pullRequestDirectoryPath, { recursive: true });
+
+    const cacheSnapshotPath = path.join(pullRequestDirectoryPath, `${input.context.headSha}.md`);
+    const workspaceDiscussionPath = path.join(input.workingDirectory, reviewCommentsFileName);
+
+    await writeFile(cacheSnapshotPath, input.discussionMarkdown, "utf8");
+    await writeFile(workspaceDiscussionPath, input.discussionMarkdown, "utf8");
+
+    input.runLogger.info(
+      {
+        cacheSnapshotPath,
+        discussionFile: reviewCommentsFileName,
+        event: "review.discussion_context_saved",
+        status: "completed",
+      },
+      "Review discussion context saved",
+    );
   }
 
   private async reviewPullRequest(
@@ -294,35 +677,33 @@ export class ReviewService {
     deliveryLogger: AppLogger,
   ): Promise<void> {
     const context = toPullRequestContext(event);
+    const pullRequestKey = buildPullRequestKey(context);
     const runKey = buildRunKey(context);
     const marker = buildReviewMarker(context.headSha);
     const startedAt = Date.now();
     const runLogger = createChildLogger(deliveryLogger, {
       runKey,
     });
+    const run: ActiveRun = {
+      abortController: new AbortController(),
+      cancellationLogged: false,
+      cancellationReason: null,
+      context,
+      pullRequestKey,
+      runKey,
+    };
     let publishedReview = false;
+
+    this.activeRun = run;
 
     runLogger.info(
       {
         event: "review.started",
+        queueLength: this.queue.length,
         status: "started",
       },
       "Review started",
     );
-
-    if (this.activeRuns.has(runKey)) {
-      runLogger.info(
-        {
-          event: "review.completed",
-          reason: "duplicate_inflight",
-          status: "ignored",
-        },
-        "Review completed",
-      );
-      return;
-    }
-
-    this.activeRuns.add(runKey);
 
     try {
       let hasPublishedResult = false;
@@ -369,7 +750,7 @@ export class ReviewService {
         return;
       }
 
-      if (this.shouldStopForCancellation(runLogger, runKey, "after_idempotency")) {
+      if (this.shouldStopForCancellation(runLogger, run, "after_idempotency")) {
         return;
       }
 
@@ -391,7 +772,7 @@ export class ReviewService {
           "Review workspace prepared",
         );
 
-        if (this.shouldStopForCancellation(runLogger, runKey, "after_workspace_prepare")) {
+        if (this.shouldStopForCancellation(runLogger, run, "after_workspace_prepare")) {
           return;
         }
 
@@ -407,6 +788,18 @@ export class ReviewService {
           return;
         }
 
+        const discussionMarkdown = await this.github.getPullRequestDiscussionMarkdown(context);
+        await this.persistDiscussionContext({
+          context,
+          discussionMarkdown,
+          runLogger,
+          workingDirectory: workspace.workingDirectory,
+        });
+
+        if (this.shouldStopForCancellation(runLogger, run, "after_discussion_context")) {
+          return;
+        }
+
         const prompt = buildReviewPrompt({
           owner: context.owner,
           repo: context.repo,
@@ -415,6 +808,8 @@ export class ReviewService {
           headSha: context.headSha,
           diff: workspace.diff,
           files: workspace.reviewableFiles,
+          discussionContextMarkdown: discussionMarkdown,
+          discussionFilePath: reviewCommentsFileName,
         });
 
         runLogger.info(
@@ -429,6 +824,7 @@ export class ReviewService {
 
         const outcome = await this.codex.review(
           {
+            abortSignal: run.abortController.signal,
             prompt,
             workingDirectory: workspace.workingDirectory,
           },
@@ -438,6 +834,10 @@ export class ReviewService {
         );
 
         if (!outcome.ok) {
+          if (outcome.cancelled || this.shouldStopForCancellation(runLogger, run, "after_codex")) {
+            return;
+          }
+
           runLogger.warn(
             {
               event: "review.codex_failed",
@@ -468,7 +868,7 @@ export class ReviewService {
           "Review Codex step completed",
         );
 
-        if (this.shouldStopForCancellation(runLogger, runKey, "after_codex")) {
+        if (this.shouldStopForCancellation(runLogger, run, "after_codex")) {
           return;
         }
 
@@ -516,7 +916,7 @@ export class ReviewService {
           "Review publish started",
         );
 
-        if (this.shouldStopForCancellation(runLogger, runKey, "before_publish")) {
+        if (this.shouldStopForCancellation(runLogger, run, "before_publish")) {
           return;
         }
 
@@ -568,7 +968,7 @@ export class ReviewService {
             "Review publish fallback",
           );
 
-          if (this.shouldStopForCancellation(runLogger, runKey, "before_publish_fallback")) {
+          if (this.shouldStopForCancellation(runLogger, run, "before_publish_fallback")) {
             return;
           }
 
@@ -589,10 +989,26 @@ export class ReviewService {
             "Review published",
           );
         }
+
+        if (reviewEvent === "APPROVE" && this.approvedLockEnabled) {
+          this.approvedLockedPullRequests.add(pullRequestKey);
+          this.removeQueuedRequest(pullRequestKey);
+          runLogger.info(
+            {
+              event: "review.approved_locked",
+              status: "completed",
+            },
+            "Review approved lock applied",
+          );
+        }
       } finally {
         await workspace.cleanup();
       }
     } catch (error) {
+      if (this.shouldStopForCancellation(runLogger, run, "on_error")) {
+        return;
+      }
+
       runLogger.error(
         {
           error,
@@ -623,19 +1039,21 @@ export class ReviewService {
         );
       }
     } finally {
-      if (publishedReview && this.isCancellationRequested(runKey)) {
+      if (this.activeRun?.runKey === runKey) {
+        this.activeRun = null;
+      }
+
+      if (publishedReview && run.abortController.signal.aborted) {
         runLogger.info(
           {
             event: "review.cancel_missed",
-            reason: "cancel_requested",
+            reason: run.cancellationReason ?? "cancel_requested",
             status: "cancel_missed",
           },
           "Review cancel missed",
         );
       }
 
-      this.activeRuns.delete(runKey);
-      this.cancelRequestedRuns.delete(runKey);
       runLogger.info(
         {
           durationMs: Date.now() - startedAt,

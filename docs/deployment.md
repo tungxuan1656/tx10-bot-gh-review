@@ -197,10 +197,11 @@ Then provision TLS with your preferred method such as Let's Encrypt.
 
 Behavior notes:
 
-- The service reviews only when a `pull_request` event arrives with action `review_requested` for `GITHUB_BOT_LOGIN`.
-- `synchronize` events are logged for audit but do not trigger automatic re-review.
-- `review_request_removed` requests a best-effort in-memory cancellation for an in-flight run on the same head SHA.
-- New commits still require someone to request review from the bot again when a fresh review is wanted.
+- The service uses a single global FIFO queue for all incoming review work.
+- The service reviews on `review_requested` for `GITHUB_BOT_LOGIN` and on `synchronize` while the bot remains requested.
+- If a newer commit arrives for the same PR while reviewing, the in-flight run is canceled and Codex is terminated.
+- `review_request_removed` requests a best-effort cancellation and removes queued work for that PR.
+- When `REVIEW_APPROVED_LOCK_ENABLED=true`, commits pushed after bot approval are skipped.
 
 ## Troubleshooting
 

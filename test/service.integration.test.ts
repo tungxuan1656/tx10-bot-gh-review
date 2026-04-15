@@ -7,6 +7,8 @@ import type { AppLogger } from "../src/logger.js";
 import type { NormalizedPullRequestEvent } from "../src/review/webhook-event.js";
 import type { ReviewWorkspaceManager } from "../src/review/workspace.js";
 
+type PublishReviewInput = Parameters<ReviewPlatform["publishReview"]>[0];
+
 function createLoggerStub(): AppLogger {
   return {
     debug: vi.fn(),
@@ -47,6 +49,7 @@ function createPullRequestEvent(
 
 function createGitHubPlatform(overrides: Partial<ReviewPlatform> = {}) {
   const baseMocks = {
+    getPullRequestDiscussionMarkdown: vi.fn().mockResolvedValue("# Pull Request Discussion Context\n\n- None\n"),
     hasPublishedResult: vi.fn().mockResolvedValue(false),
     publishFailureComment: vi.fn().mockResolvedValue(undefined),
     publishReview: vi.fn().mockResolvedValue(undefined),
@@ -406,8 +409,216 @@ describe("ReviewService", () => {
     expect(reviewInput.workingDirectory).toBe("/tmp/codex-review-workspace");
     expect(reviewInput.prompt).toContain("Unified diff (context=5):");
     expect(reviewInput.prompt).toContain("diff --git a/src/app.ts b/src/app.ts");
+    expect(reviewInput.prompt).toContain("pr-review-comments.md");
+    expect(reviewInput.prompt).toContain("Historical PR discussion snapshot");
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1);
     expect(github.mocks.publishFailureComment).not.toHaveBeenCalled();
+  });
+
+  it("processes review requests in global FIFO order across repositories", async () => {
+    const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
+    const firstReviewDeferred = createDeferred<{
+      ok: true;
+      result: {
+        decision: "approve";
+        findings: [];
+        score: number;
+        summary: string;
+      };
+    }>();
+    const review = vi
+      .fn<CodexRunner["review"]>()
+      .mockImplementationOnce(() => firstReviewDeferred.promise)
+      .mockResolvedValue({
+        ok: true,
+        result: {
+          summary: "No issues.",
+          score: 9,
+          decision: "approve",
+          findings: [],
+        },
+      });
+    const codex: CodexRunner = { review };
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
+
+    const repoOneRequest = service.handlePullRequestEvent(createPullRequestEvent());
+    await Promise.resolve();
+    const repoTwoRequest = service.handlePullRequestEvent(
+      createPullRequestEvent({
+        deliveryId: "delivery-456",
+        headSha: "def999",
+        owner: "acme-2",
+        pullNumber: 7,
+        repo: "repo-2",
+      }),
+    );
+
+    firstReviewDeferred.resolve({
+      ok: true,
+      result: {
+        summary: "No issues.",
+        score: 9,
+        decision: "approve",
+        findings: [],
+      },
+    });
+
+    await Promise.all([repoOneRequest, repoTwoRequest]);
+
+    expect(review).toHaveBeenCalledTimes(2);
+    const publishedHeads = vi
+      .mocked(github.mocks.publishReview)
+      .mock.calls.map((call) => (call[0] as PublishReviewInput).context.headSha);
+    expect(publishedHeads).toEqual(["abc123", "def999"]);
+  });
+
+  it("cancels in-flight Codex run on synchronize and processes next queued request first", async () => {
+    const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
+    const firstRunStarted = createDeferred<void>();
+    const firstRunCancelled = createDeferred<void>();
+    const review = vi
+      .fn<CodexRunner["review"]>()
+      .mockImplementationOnce((input) => {
+        firstRunStarted.resolve();
+        return new Promise((resolve) => {
+          if (input.abortSignal?.aborted) {
+            firstRunCancelled.resolve();
+            resolve({
+              ok: false,
+              reason: "Codex review canceled.",
+              cancelled: true,
+            });
+            return;
+          }
+
+          input.abortSignal?.addEventListener(
+            "abort",
+            () => {
+              firstRunCancelled.resolve();
+              resolve({
+                ok: false,
+                reason: "Codex review canceled.",
+                cancelled: true,
+              });
+            },
+            { once: true },
+          );
+        });
+      })
+      .mockResolvedValue({
+        ok: true,
+        result: {
+          summary: "No issues.",
+          score: 9,
+          decision: "approve",
+          findings: [],
+        },
+      });
+    const codex: CodexRunner = { review };
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      "review-bot",
+    );
+
+    const repoOneOriginal = service.handlePullRequestEvent(createPullRequestEvent());
+    await firstRunStarted.promise;
+
+    const repoTwoRequest = service.handlePullRequestEvent(
+      createPullRequestEvent({
+        deliveryId: "delivery-456",
+        headSha: "sha-repo-2",
+        owner: "acme-2",
+        pullNumber: 7,
+        repo: "repo-2",
+      }),
+    );
+
+    const repoOneUpdated = service.handlePullRequestEvent(
+      createPullRequestEvent({
+        action: "synchronize",
+        actionKind: "synchronize",
+        afterSha: "sha-repo-1-new",
+        beforeSha: "abc123",
+        botStillRequested: true,
+        headSha: "sha-repo-1-new",
+        requestedReviewerLogin: null,
+        requestedReviewerLogins: ["review-bot"],
+      }),
+    );
+
+    await firstRunCancelled.promise;
+    await Promise.all([repoOneOriginal, repoTwoRequest, repoOneUpdated]);
+
+    const publishedHeads = vi
+      .mocked(github.mocks.publishReview)
+      .mock.calls.map((call) => (call[0] as PublishReviewInput).context.headSha);
+    expect(publishedHeads).toEqual(["sha-repo-2", "sha-repo-1-new"]);
+    expect(publishedHeads).not.toContain("abc123");
+  });
+
+  it("skips synchronize commits after a PR is approved when approved lock is enabled", async () => {
+    const github = createGitHubPlatform();
+    const workspace = createWorkspaceManager();
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: {
+        summary: "No issues.",
+        score: 9,
+        decision: "approve",
+        findings: [],
+      },
+    });
+    const codex: CodexRunner = { review };
+    const logger = createLoggerStub();
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      logger,
+      "review-bot",
+      {
+        approvedLockEnabled: true,
+      },
+    );
+
+    await service.handlePullRequestEvent(createPullRequestEvent());
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({
+        action: "synchronize",
+        actionKind: "synchronize",
+        afterSha: "sha-after-approve",
+        beforeSha: "abc123",
+        botStillRequested: true,
+        headSha: "sha-after-approve",
+        requestedReviewerLogin: null,
+        requestedReviewerLogins: ["review-bot"],
+      }),
+    );
+
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(github.mocks.publishReview).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "review.queue_ignored",
+        reason: "approved_locked",
+        status: "ignored",
+      }),
+      "Review queued event ignored",
+    );
   });
 
   it("publishes APPROVE with comments when findings are non-blocking", async () => {
@@ -579,11 +790,19 @@ describe("ReviewService", () => {
     );
   });
 
-  it("ignores synchronize events under the manual-only policy and logs botStillRequested", async () => {
+  it("reviews synchronize events when the bot remains requested", async () => {
     const github = createGitHubPlatform({
     });
     const workspace = createWorkspaceManager();
-    const review = vi.fn();
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: {
+        summary: "No actionable issues.",
+        score: 9,
+        decision: "approve",
+        findings: [],
+      },
+    });
     const codex: CodexRunner = { review };
     const logger = createLoggerStub();
 
@@ -605,14 +824,13 @@ describe("ReviewService", () => {
       }),
     );
 
-    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled();
-    expect(review).not.toHaveBeenCalled();
+    expect(workspace.mocks.prepareWorkspace).toHaveBeenCalledTimes(1);
+    expect(review).toHaveBeenCalledTimes(1);
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         botStillRequested: true,
         event: "webhook.routed",
-        reason: "manual_only_policy",
-        status: "ignored",
+        status: "trigger_review",
       }),
       "Webhook routed",
     );
@@ -665,7 +883,7 @@ describe("ReviewService", () => {
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "review.canceled",
-        reason: "canceled_before_publish",
+        reason: "cancel_requested",
         runKey: "acme/repo#42@abc123",
         status: "canceled",
       }),

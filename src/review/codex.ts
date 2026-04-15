@@ -46,6 +46,7 @@ export type CodexRunner = {
     input: {
       prompt: string;
       workingDirectory: string;
+      abortSignal?: AbortSignal;
     },
     logger?: AppLogger,
   ): Promise<CodexReviewOutcome>;
@@ -77,9 +78,18 @@ export function createCodexRunner(input: {
       reviewInput: {
         prompt: string;
         workingDirectory: string;
+        abortSignal?: AbortSignal;
       },
       loggerOverride?: AppLogger,
     ): Promise<CodexReviewOutcome> {
+      if (reviewInput.abortSignal?.aborted) {
+        return {
+          ok: false,
+          reason: "Codex review canceled.",
+          cancelled: true,
+        };
+      }
+
       const logger = loggerOverride ?? input.logger;
       const startedAt = Date.now();
       const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "codex-review-"));
@@ -126,6 +136,35 @@ export function createCodexRunner(input: {
 
         const stdoutChunks: Buffer[] = [];
         const stderrChunks: Buffer[] = [];
+        let cancelled = false;
+        let abortListener: (() => void) | undefined;
+
+        const killChildProcess = () => {
+          if (child.exitCode !== null) {
+            return;
+          }
+
+          cancelled = true;
+          child.kill("SIGTERM");
+
+          const forceKillTimeout = setTimeout(() => {
+            if (child.exitCode === null) {
+              child.kill("SIGKILL");
+            }
+          }, 2_000);
+          forceKillTimeout.unref();
+        };
+
+        if (reviewInput.abortSignal) {
+          abortListener = () => {
+            killChildProcess();
+          };
+          reviewInput.abortSignal.addEventListener("abort", abortListener, { once: true });
+
+          if (reviewInput.abortSignal.aborted) {
+            killChildProcess();
+          }
+        }
 
         child.stdout.on("data", (chunk: Buffer) => {
           stdoutChunks.push(chunk);
@@ -140,7 +179,7 @@ export function createCodexRunner(input: {
         let timedOut = false;
         const timeout = setTimeout(() => {
           timedOut = true;
-          child.kill("SIGTERM");
+          killChildProcess();
         }, timeoutMs);
 
         const exitCode = await new Promise<number | null>((resolve, reject) => {
@@ -148,6 +187,9 @@ export function createCodexRunner(input: {
           child.once("close", resolve);
         }).finally(() => {
           clearTimeout(timeout);
+          if (reviewInput.abortSignal && abortListener) {
+            reviewInput.abortSignal.removeEventListener("abort", abortListener);
+          }
         });
 
         const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
@@ -174,6 +216,24 @@ export function createCodexRunner(input: {
           return {
             ok: false,
             reason: `Codex timed out after ${timeoutMs}ms.`,
+          };
+        }
+
+        if (cancelled) {
+          logger.info(
+            {
+              component: "codex",
+              durationMs: Date.now() - startedAt,
+              event: "codex.canceled",
+              status: "canceled",
+              workingDirectory: reviewInput.workingDirectory,
+            },
+            "Codex review canceled",
+          );
+          return {
+            ok: false,
+            reason: "Codex review canceled.",
+            cancelled: true,
           };
         }
 
