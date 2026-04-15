@@ -920,6 +920,57 @@ describe('ReviewService', () => {
     )
   })
 
+  it('does not cancel an in-flight review when a delayed review_requested arrives for an older SHA', async () => {
+    const publishReviewMock = vi.fn().mockResolvedValue(undefined)
+    const github = createGitHubPlatform({ publishReview: publishReviewMock })
+    const workspace = createWorkspaceManager()
+    const runStarted = createDeferred<void>()
+    const reviewChained = vi
+      .fn<CodexRunner['reviewChained']>()
+      .mockImplementationOnce(() => {
+        runStarted.resolve()
+        return Promise.resolve({
+          ok: true,
+          result: {
+            summary: 'No issues.',
+            score: 9,
+            decision: 'approve',
+            findings: [],
+          },
+        })
+      })
+    const codex = makeCodexRunner(reviewChained)
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      'review-bot',
+    )
+
+    // Start the in-flight review for headSha 'abc123'
+    const currentRun = service.handlePullRequestEvent(createPullRequestEvent())
+    await runStarted.promise
+
+    // Delayed/out-of-order review_requested arrives for an older SHA while abc123 is in-flight.
+    // With the fix, latestHead must NOT be overwritten to 'old-sha-111' and the
+    // in-flight run must NOT be cancelled.
+    await Promise.all([
+      currentRun,
+      service.handlePullRequestEvent(
+        createPullRequestEvent({ headSha: 'old-sha-111' }),
+      ),
+    ])
+
+    // The in-flight 'abc123' review should have published successfully
+    expect(publishReviewMock).toHaveBeenCalledTimes(1)
+    expect(
+      (publishReviewMock.mock.calls[0]?.[0] as PublishReviewInput).context
+        .headSha,
+    ).toBe('abc123')
+    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
+  })
+
   it('ignores unsupported pull_request actions', async () => {
     const github = createGitHubPlatform({})
     const workspace = createWorkspaceManager()
