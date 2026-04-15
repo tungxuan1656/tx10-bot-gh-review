@@ -40,9 +40,11 @@ Expected response:
 
 - Confirm the event was `pull_request` with action `review_requested`
 - Confirm `requested_reviewer.login` matched `GITHUB_BOT_LOGIN`
+- For `synchronize` events, confirm `pull_request.requested_reviewers` still contains `GITHUB_BOT_LOGIN`
 - Confirm the PR includes reviewable file types with patch hunks
 - Check whether the head SHA already has a marker comment or review from a prior run
-- Check whether a later `review_request_removed` canceled the in-flight run before publish
+- Check whether the PR is approved-locked and `REVIEW_APPROVED_LOCK_ENABLED=true`
+- Check whether a later `review_request_removed` or newer commit canceled the in-flight run before publish
 
 ### Inline findings were moved into the summary
 
@@ -51,8 +53,11 @@ Expected response:
 
 ## Operational Notes
 
-- The MVP stores in-flight dedupe state in memory and persistent dedupe state on the PR itself via HTML comment markers.
-- A new commit naturally invalidates the previous marker because the head SHA changes, but this service will not re-review until the bot is explicitly requested again.
+- The MVP stores queue state in memory and persistent dedupe state on the PR itself via HTML comment markers.
+- Work is processed through one global FIFO queue across all repos and PRs in this process.
+- A new commit for the currently running PR preempts the run and hard-cancels the active Codex process.
+- Discussion context is fetched from GitHub per run and stored in `pr-review-comments.md` inside the workspace, with cached snapshots cleaned by TTL.
+- A bot `APPROVE` can lock the PR from further auto-review when `REVIEW_APPROVED_LOCK_ENABLED=true`.
 - The fallback comment is intentionally neutral and never blocks merging on transient infrastructure failures.
 - Non-blocking findings are still published as an `APPROVE` review when the response decision is consistent with the severity policy.
 
@@ -97,7 +102,8 @@ Each log line now also carries structured fields such as:
 | --- | --- | --- | --- |
 | `review_requested` for the bot | `trigger_review` | n/a | Start a review run |
 | `review_requested` for another reviewer | `ignored` | `reviewer_mismatch` | Do nothing |
-| `synchronize` | `ignored` | `manual_only_policy` | Audit only, no re-review |
+| `synchronize` with bot still requested | `trigger_review` | n/a | Enqueue re-review for latest head SHA |
+| `synchronize` without bot requested | `ignored` | `bot_not_requested` | Do nothing |
 | `review_request_removed` for the bot | `cancel_requested` | `cancel_requested` | Best-effort cancel in-flight run |
 | Other pull request actions | `ignored` | `unsupported_action` | Do nothing |
 
@@ -111,9 +117,9 @@ Each log line now also carries structured fields such as:
 
 ### `synchronize`
 
-- `webhook.routed` with `status=ignored`
-- `reason=manual_only_policy`
-- `botStillRequested=true|false` shows whether the bot is still listed in `pull_request.requested_reviewers`
+- `webhook.routed` with `status=trigger_review` when `botStillRequested=true`
+- If the same PR is in-flight with an older head SHA, the current run is canceled and a new run is queued
+- `webhook.routed` with `status=ignored` and `reason=bot_not_requested` when `botStillRequested=false`
 
 ### `review_request_removed`
 

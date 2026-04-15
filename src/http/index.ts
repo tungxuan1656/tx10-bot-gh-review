@@ -25,6 +25,11 @@ const reviewService = new ReviewService(
   workspaceManager,
   logger,
   config.githubBotLogin,
+  {
+    approvedLockEnabled: config.reviewApprovedLockEnabled,
+    discussionCacheDirectory: config.reviewDiscussionCacheDir,
+    discussionCacheTtlMs: config.reviewDiscussionCacheTtlMs,
+  },
 );
 const app = createServer({
   config,

@@ -17,6 +17,7 @@ export const reviewFindingSchema = z.object({
 
 export const reviewResultSchema = z.object({
   summary: z.string().min(1),
+  changesOverview: z.string().optional(),
   score: z.number().min(0).max(10),
   decision: z.enum(["approve", "request_changes"]),
   findings: z.array(reviewFindingSchema),
@@ -54,6 +55,26 @@ export type ReviewableFile = {
   content: string;
 };
 
+export type PRCommit = {
+  sha: string;
+  message: string;
+};
+
+export type PRInfoObject = {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  title: string;
+  description: string;
+  headSha: string;
+  baseSha: string;
+  headRef: string;
+  baseRef: string;
+  htmlUrl: string;
+  commits: PRCommit[];
+  changedFilePaths: string[];
+};
+
 export type CodexReviewSuccess = {
   ok: true;
   result: ReviewResult;
@@ -62,6 +83,7 @@ export type CodexReviewSuccess = {
 export type CodexReviewFailure = {
   ok: false;
   reason: string;
+  cancelled?: boolean;
 };
 
 export type CodexReviewOutcome = CodexReviewSuccess | CodexReviewFailure;

@@ -19,5 +19,8 @@ describe("loadConfig", () => {
 
     expect(config.githubToken).toBe("ghp_test_token");
     expect(config.githubBotLogin).toBe("review-bot");
+    expect(config.reviewApprovedLockEnabled).toBe(true);
+    expect(config.reviewDiscussionCacheDir.length).toBeGreaterThan(0);
+    expect(config.reviewDiscussionCacheTtlMs).toBeGreaterThan(0);
   });
 });

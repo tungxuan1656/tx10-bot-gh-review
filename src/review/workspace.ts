@@ -1,4 +1,4 @@
-import { access, cp, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -6,14 +6,18 @@ import { fileURLToPath } from "node:url";
 
 import { isReviewableFilePath } from "./filter-files.js";
 import type { AppLogger } from "../logger.js";
-import type { PullRequestContext, ReviewableFile } from "./types.js";
+import type { PRInfoObject, PullRequestContext, ReviewableFile } from "./types.js";
 
 const baseRefName = "refs/codex-review/base";
 const headRefName = "refs/codex-review/head";
 
+/** Maximum characters of the combined diff before truncation. */
+const maxDiffChars = 80_000;
+
 export type PreparedReviewWorkspace = {
   cleanup(): Promise<void>;
   diff: string;
+  prInfo: PRInfoObject;
   reviewableFiles: ReviewableFile[];
   workingDirectory: string;
 };
@@ -21,6 +25,7 @@ export type PreparedReviewWorkspace = {
 export type ReviewWorkspaceManager = {
   prepareWorkspace(
     context: PullRequestContext,
+    prInfo: PRInfoObject,
     loggerOverride?: AppLogger,
   ): Promise<PreparedReviewWorkspace>;
 };
@@ -90,6 +95,56 @@ async function copyReviewSkillsToWorkspace(workingDirectory: string): Promise<vo
         ),
       ),
   );
+}
+
+/**
+ * Serialize a PRInfoObject to a simple YAML string (no external deps).
+ */
+function serializePRInfoToYaml(prInfo: PRInfoObject): string {
+  function escapeYamlString(value: string): string {
+    // Use literal block scalar for multi-line, double-quoted for single-line
+    if (value.includes("\n")) {
+      const indented = value.replace(/\n/g, "\n  ");
+      return `|-\n  ${indented}`;
+    }
+    // Escape double quotes and wrap in double quotes
+    return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  }
+
+  const lines: string[] = [
+    `owner: ${escapeYamlString(prInfo.owner)}`,
+    `repo: ${escapeYamlString(prInfo.repo)}`,
+    `pull_number: ${prInfo.pullNumber}`,
+    `title: ${escapeYamlString(prInfo.title)}`,
+    `html_url: ${escapeYamlString(prInfo.htmlUrl)}`,
+    `head_sha: ${escapeYamlString(prInfo.headSha)}`,
+    `base_sha: ${escapeYamlString(prInfo.baseSha)}`,
+    `head_ref: ${escapeYamlString(prInfo.headRef)}`,
+    `base_ref: ${escapeYamlString(prInfo.baseRef)}`,
+    `description: ${escapeYamlString(prInfo.description || "(none)")}`,
+    ``,
+    `commits:`,
+  ];
+
+  for (const commit of prInfo.commits) {
+    lines.push(`  - sha: ${escapeYamlString(commit.sha)}`);
+    lines.push(`    message: ${escapeYamlString(commit.message)}`);
+  }
+
+  lines.push(``);
+  lines.push(`changed_files:`);
+  for (const filePath of prInfo.changedFilePaths) {
+    lines.push(`  - ${escapeYamlString(filePath)}`);
+  }
+
+  return lines.join("\n") + "\n";
+}
+
+function truncateDiff(diff: string): string {
+  if (diff.length <= maxDiffChars) {
+    return diff;
+  }
+  return `${diff.slice(0, maxDiffChars)}\n...[diff truncated]`;
 }
 
 function isRenameOrCopy(status: string): boolean {
@@ -306,6 +361,7 @@ export function createTemporaryReviewWorkspaceManager(
   return {
     async prepareWorkspace(
       context: PullRequestContext,
+      prInfo: PRInfoObject,
       loggerOverride?: AppLogger,
     ): Promise<PreparedReviewWorkspace> {
       const logger = loggerOverride ?? input.logger;
@@ -385,6 +441,10 @@ export function createTemporaryReviewWorkspaceManager(
 
         await copyReviewSkillsToWorkspace(workingDirectory);
 
+        // Write pr-info.yaml into workspace root for Codex to read
+        const prInfoYaml = serializePRInfoToYaml(prInfo);
+        await writeFile(path.join(workingDirectory, "pr-info.yaml"), prInfoYaml, "utf8");
+
         const changedFiles = parseChangedFiles(
           await runCommand({
             args: ["diff", "--name-status", "-z", baseRefName, headRefName],
@@ -427,7 +487,7 @@ export function createTemporaryReviewWorkspaceManager(
           )
         ).filter((file): file is ReviewableFile => file !== null);
 
-        const diff =
+        const rawDiff =
           reviewableFiles.length === 0
             ? ""
             : await runCommand({
@@ -445,10 +505,13 @@ export function createTemporaryReviewWorkspaceManager(
                 timeoutMs,
               });
 
+        const diff = truncateDiff(rawDiff);
+
         logger.info(
           {
             component: "workspace",
             diffChars: diff.length,
+            diffTruncated: rawDiff.length > maxDiffChars,
             durationMs: Date.now() - startedAt,
             event: "workspace.prepare_completed",
             reviewableFileCount: reviewableFiles.length,
@@ -460,6 +523,7 @@ export function createTemporaryReviewWorkspaceManager(
         return {
           cleanup,
           diff,
+          prInfo,
           reviewableFiles,
           workingDirectory,
         };
