@@ -7,21 +7,29 @@ Use this structure unless the user explicitly asked for a different format.
 1. `Change Summary`
 2. `Reference Skills`
 3. `Findings`
-4. `Evidence Table`
-5. `Previous Findings Closure` when applicable
-6. `Verdict`
-7. `Missing Validation`
+4. `Potential Risks`
+5. `Evidence Table`
+6. `Previous Findings Closure` when applicable
+7. `Verdict`
+8. `Missing Validation`
 
 ## Formatting Rules
 
 - Keep the summary factual and short.
 - Group findings by `Critical`, `Major`, `Minor`, and `Improvement`.
+- `Findings` should include high-confidence issues only.
+- `Potential Risks` should include lower-confidence but meaningful concerns.
 - Every finding must include:
   - confidence score
   - evidence
   - issue description
   - why it matters
   - suggested fix
+- Every potential risk must include:
+  - confidence score in the `60-74` range
+  - reasoning grounded in code
+  - explicit assumptions
+  - suggested mitigation
 - If a severity bucket has no findings, write `None`.
 - If no findings exist, say so explicitly and still provide verdict and missing-validation notes.
 
@@ -51,10 +59,16 @@ Use this structure unless the user explicitly asked for a different format.
 - None
 
 ### Improvement
-- `[confidence: 74/100]` Add a regression test for invalid inline target fallback.
+- `[confidence: 75/100]` Add a regression test for invalid inline target fallback.
   Evidence: `test/review/publish-review.test.ts`
   Why it matters: The behavior is subtle and central to the review contract.
   Suggested fix: Add one test that proves invalid line targets fall back to the top-level review body.
+
+## Potential Risks
+- `[confidence: 60/100]` Retry behavior may still duplicate comments when network errors happen after publish.
+  Reasoning: The flow has idempotency checks before publish, but post-publish failure handling is not proven in visible tests.
+  Assumptions: Publish call can succeed remotely before client timeout.
+  Suggested mitigation: Add one integration test that simulates timeout-after-success and verifies de-duplication.
 
 ## Evidence Table
 | Item | Status | Evidence | Severity if fail |
@@ -82,3 +96,5 @@ Use this structure unless the user explicitly asked for a different format.
 - `Needs fixes` if no critical finding exists but at least one major finding exists.
 - `Approve with notes` if only minor findings or improvements exist.
 - `Approve` if no findings exist and validation is sufficient for the scope.
+
+Potential risks should not independently raise verdict severity without evidence that meets findings thresholds.

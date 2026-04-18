@@ -59,13 +59,17 @@ Attach `confidence: NN/100` to every reported item.
 
 Direct, deterministic evidence. Little to no inference required.
 
-### 80-89
+### 75-89
 
-Strong evidence with limited inference. Appropriate for most major issues.
+Strong evidence with limited inference. Appropriate for findings in most cases.
 
-### 70-79
+### 70-74
 
-Bounded, lower-risk findings or improvements. Use sparingly.
+Lower-confidence signal band. Use for `Potential Risks`, not `Findings`.
+
+### 60-69
+
+Weak-to-moderate but still meaningful signal. Use only for `Potential Risks` with explicit assumptions.
 
 ### Below 60
 
@@ -75,13 +79,14 @@ Do not report. Convert to an open question or omit.
 
 - `critical` requires `90+`
 - `major` requires `80+`
-- `minor` requires `65+`
-- `improvement` requires `60+`
+- `minor` requires `80+`
+- `improvement` requires `75+`
+- `potential risk` requires `60-74`
 
 ## Scoring Rules
 
 - Lower confidence when surrounding context (callers, contracts, adjacent tests) is absent from the provided files. Static analysis without test execution is the assumed baseline; do not apply an additional penalty solely for lack of runtime verification.
 - Prefer one representative finding over multiple low-confidence duplicates. When the same pattern recurs, report a primary finding and list all affected locations.
 - If the issue depends on an assumption that cannot be verified from the code or available evidence, do not report it as a finding.
-- If a bug is reproducible through a direct code path trace, confidence should usually be `90+`.
-- For minor and improvement findings, prefer reporting over silence. A finding with borderline confidence and real evidence is better than a silent omission.
+- If a bug is reproducible through a direct code path trace, confidence should usually be `85+`.
+- For minor and improvement findings, keep the same high-confidence standard as other findings; route lower-confidence concerns to `Potential Risks`.

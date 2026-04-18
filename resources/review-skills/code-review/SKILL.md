@@ -205,7 +205,7 @@ List meaningful concerns that lack full certainty.
 
 Rules:
 
-- Confidence: 60-79
+- Confidence: 60-74
 - Must include reasoning grounded in code
 - Clearly state assumptions
 - DO NOT mix with Findings

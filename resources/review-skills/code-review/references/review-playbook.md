@@ -75,7 +75,21 @@ Apply these probes wherever relevant:
 - `Fix closure`: follow-up patches actually resolve prior findings end to end.
 - `Token-level scan`: after the semantic walkthrough, scan every line of the diff once more for small issues that holistic reading misses — magic literals, missing `void` or `await`, unsafe `!` assertions, suspicious type casts, off-by-one index expressions, and wrong operator choices.
 
-## Phase 7: Rule Application
+## Phase 7: Coverage Guard
+
+Consciously check all dimensions below and avoid generic pass statements:
+
+- Correctness and logic
+- Edge cases and failure modes
+- Security and privacy
+- Performance and scalability
+- Data integrity and contracts
+- Concurrency and lifecycle
+- Code quality and maintainability
+- Consistency with the existing codebase
+- UX and user flow when applicable
+
+## Phase 8: Rule Application
 
 Use the rule catalog to check:
 
@@ -89,27 +103,42 @@ Use the rule catalog to check:
 - i18n and accessibility
 - documentation and hygiene
 
-## Phase 8: Findings Scoring
+## Phase 9: Attack Mode (Break-the-Code Pass)
 
-For each potential finding:
+After evidence-based inspection, run a second adversarial pass:
+
+1. Assume the changed flow is fragile.
+2. Stress invalid input, race conditions, retries, async ordering, and partial data.
+3. Identify at least 3 concrete failure scenarios with:
+   - trigger
+   - failure behavior
+   - impacted flow
+
+Capture these as findings only when evidence meets thresholds; otherwise place them in `Potential Risks`.
+
+## Phase 10: Findings and Risks Scoring
+
+For each potential issue:
 
 1. Confirm the exact evidence.
-2. Decide whether it is a defect or only an improvement.
+2. Decide whether it belongs in `Findings` (high confidence) or `Potential Risks` (lower confidence).
 3. Assign severity.
 4. Assign confidence.
-5. For critical and major findings, require concrete evidence before reporting. For minor and improvement findings, prefer reporting over silence: a finding with borderline confidence and real evidence is better than a silent omission.
+5. For findings, enforce high-confidence thresholds.
+6. For potential risks, include explicit assumptions and a mitigation suggestion.
 
-## Phase 9: Final Review
+## Phase 11: Final Review
 
 Write the final review in this order:
 
 1. `Change Summary`
 2. `Reference Skills`
 3. `Findings`
-4. `Evidence Table`
-5. `Previous Findings Closure` when applicable
-6. `Verdict`
-7. `Missing Validation`
+4. `Potential Risks`
+5. `Evidence Table`
+6. `Previous Findings Closure` when applicable
+7. `Verdict`
+8. `Missing Validation`
 
 ## Follow-Up Review Rule
 
