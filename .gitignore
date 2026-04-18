@@ -40,3 +40,5 @@ crawler/.env
 crawler/data/
 crawler/apps/
 supabase/.env
+
+.omx
