@@ -209,7 +209,6 @@ function createWorkspaceManager(
 function makeCodexRunner(input?: {
   review?: CodexRunner['review']
   reviewTwoPhase?: CodexRunner['reviewTwoPhase']
-  reviewChained?: CodexRunner['reviewChained']
 }): CodexRunner {
   return {
     review:
@@ -224,12 +223,6 @@ function makeCodexRunner(input?: {
         ok: true,
         result: createReviewResult(),
       }) as CodexRunner['reviewTwoPhase']),
-    reviewChained:
-      input?.reviewChained ??
-      (vi.fn().mockResolvedValue({
-        ok: true,
-        result: createReviewResult(),
-      }) as CodexRunner['reviewChained']),
   }
 }
 

@@ -1,5 +1,3 @@
-import type { ReviewableFile } from './types.js'
-
 const maxPhase1OutputCharacters = 3_000
 const maxPhaseDiffInputCharacters = 80_000
 const baseRefName = 'refs/codex-review/base'
@@ -219,52 +217,3 @@ export function buildReReviewPrompt(input: {
   ].join('\n')
 }
 
-/** @deprecated Kept temporarily for compatibility with callers not yet migrated. */
-export function buildPhase3Prompt(input: {
-  owner: string
-  repo: string
-  pullNumber: number
-  title: string
-  headSha: string
-  changesOverview: string
-  discussionFilePath: string
-  reviewablePaths: string[]
-}): string {
-  return buildInitialReviewPhase2Prompt({
-    owner: input.owner,
-    repo: input.repo,
-    pullNumber: input.pullNumber,
-    title: input.title,
-    headSha: input.headSha,
-    phase1Summary: input.changesOverview,
-    discussionFilePath: input.discussionFilePath,
-    reviewablePaths: input.reviewablePaths,
-  })
-}
-
-/**
- * Backwards-compatible single-prompt builder.
- * Used by tests and any callers that have not yet migrated to the chained flow.
- */
-export function buildReviewPrompt(input: {
-  owner: string
-  repo: string
-  pullNumber: number
-  title: string
-  headSha: string
-  diff: string
-  files: ReviewableFile[]
-  discussionContextMarkdown: string
-  discussionFilePath: string
-}): string {
-  return buildInitialReviewPhase2Prompt({
-    owner: input.owner,
-    repo: input.repo,
-    pullNumber: input.pullNumber,
-    title: input.title,
-    headSha: input.headSha,
-    discussionFilePath: input.discussionFilePath,
-    phase1Summary: '',
-    reviewablePaths: input.files.map((file) => file.path),
-  })
-}

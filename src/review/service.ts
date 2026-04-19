@@ -45,7 +45,6 @@ type RoutedPullRequestEvent =
   | {
       status: 'ignored'
       reason:
-        | 'bot_not_requested'
         | 'reviewer_mismatch'
         | 'synchronize_ignored'
         | 'unsupported_action'
@@ -390,22 +389,6 @@ export class ReviewService {
     const context = toPullRequestContext(event)
     const pullRequestKey = buildPullRequestKey(context)
 
-    if (
-      this.approvedLockEnabled &&
-      this.approvedLockedPullRequests.has(pullRequestKey) &&
-      event.actionKind !== 'review_requested'
-    ) {
-      deliveryLogger.info(
-        {
-          event: 'review.queue_ignored',
-          reason: 'approved_locked',
-          status: 'ignored',
-        },
-        'Review queued event ignored',
-      )
-      return
-    }
-
     const inFlightRun = this.activeRun
     if (
       inFlightRun &&
@@ -595,24 +578,6 @@ export class ReviewService {
 
         if (this.queuedByPullRequestKey.get(pullRequestKey) === queuedRequest) {
           this.queuedByPullRequestKey.delete(pullRequestKey)
-        }
-
-        if (
-          this.approvedLockEnabled &&
-          this.approvedLockedPullRequests.has(pullRequestKey) &&
-          queuedRequest.event.actionKind !== 'review_requested'
-        ) {
-          const logger = this.createDeliveryLogger(queuedRequest.event)
-          logger.info(
-            {
-              event: 'review.queue_ignored',
-              reason: 'approved_locked',
-              status: 'ignored',
-            },
-            'Review queued event ignored',
-          )
-          queuedRequest.resolveCompletion()
-          continue
         }
 
         await this.reviewPullRequest(
