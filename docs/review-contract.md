@@ -26,7 +26,9 @@ The Codex prompt contract keeps the review pipeline deterministic. The bot asks 
 ## Prompt Rules
 
 - Copy `resources/review-skills/*` into the temporary workspace `.agents/skills` before invoking Codex
-- Instruct Codex to use the bundled `code-review` skill
+- Initial review flow uses 2 phases: metadata summary then deep JSON review
+- Re-review flow uses 1 fast JSON phase focused on commit delta from the latest successful bot-reviewed SHA
+- Instruct Codex to use the bundled `code-review` skill for the deep initial phase
 - Instruct Codex to inspect changes directly from workspace refs with git commands:
   - `git diff --name-status refs/codex-review/base refs/codex-review/head`
   - `git diff --unified=5 refs/codex-review/base refs/codex-review/head`
@@ -37,6 +39,10 @@ The Codex prompt contract keeps the review pipeline deterministic. The bot asks 
 - No stylistic-only findings
 - Only findings backed by a specific file path and line number grounded in visible diff hunks
 - Focus on correctness, bugs, security, and missing validation
+
+Optional JSON field:
+
+- `changesOverview` may be included when it adds value; it is not required for schema validity
 
 ## Deterministic Decision Mapping
 

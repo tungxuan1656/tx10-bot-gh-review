@@ -186,10 +186,11 @@ sudo launchctl start com.cloudflare.cloudflared
 Behavior notes:
 
 - The bot uses one global FIFO queue across all repositories handled by this process.
-- The bot reviews on `review_requested` and on `synchronize` while still requested.
-- If a new commit lands for the same PR mid-review, the current Codex process is canceled and re-review is queued.
+- The bot reviews only on `review_requested` for the configured bot login.
+- `synchronize` events are ignored and never auto-trigger review.
+- A new manual `review_requested` after a prior successful review runs fast re-review mode.
 - Removing the bot as a reviewer issues a best-effort cancellation request for the current in-flight run.
-- With approved lock enabled, commits after a bot `APPROVE` are skipped.
+- With approved lock enabled, non-manual follow-up events after a bot `APPROVE` can be skipped, while explicit `review_requested` is still allowed.
 
 ## Troubleshooting
 

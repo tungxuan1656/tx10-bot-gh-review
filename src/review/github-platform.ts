@@ -4,6 +4,8 @@ import type { AppConfig } from '../config.js'
 import type {
   GitHubPullRequestFile,
   InlineReviewComment,
+  PriorSuccessfulReviewInfo,
+  PriorSuccessfulReviewState,
   PRCommit,
   PRInfoObject,
   PullRequestContext,
@@ -26,6 +28,7 @@ type ReviewPlatform = {
     marker: string,
   ): Promise<boolean>
   getPullRequestDiscussionMarkdown(context: PullRequestContext): Promise<string>
+  getPriorSuccessfulReview(context: PullRequestContext): Promise<PriorSuccessfulReviewInfo>
   getPRInfo(context: PullRequestContext): Promise<PRInfoObject>
   publishReview(input: {
     context: PullRequestContext
@@ -378,6 +381,24 @@ function decodeBase64Content(content: string): string {
   return Buffer.from(content, 'base64').toString('utf8')
 }
 
+function toSuccessfulReviewState(
+  state: string | null | undefined,
+): PriorSuccessfulReviewState | null {
+  if (state === 'APPROVED') {
+    return 'APPROVED'
+  }
+
+  if (state === 'CHANGES_REQUESTED') {
+    return 'CHANGES_REQUESTED'
+  }
+
+  if (state === 'COMMENTED') {
+    return 'COMMENTED'
+  }
+
+  return null
+}
+
 export function hasMarkerFromAppBot(
   item: ReviewResultMarkerAuthor,
   marker: string,
@@ -469,6 +490,49 @@ export function createGitHubReviewPlatform(
         context,
         payload,
       })
+    },
+
+    async getPriorSuccessfulReview(context) {
+      const octokit = getOctokit()
+      const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
+        owner: context.owner,
+        repo: context.repo,
+        pull_number: context.pullNumber,
+        per_page: 100,
+      })
+
+      const latest = [...reviews]
+        .filter((review) => review.user?.login === config.githubBotLogin)
+        .map((review) => ({
+          commitId: review.commit_id ?? null,
+          state: toSuccessfulReviewState(review.state),
+          submittedAt: review.submitted_at ?? '',
+        }))
+        .filter(
+          (
+            review,
+          ): review is {
+            commitId: string | null
+            state: PriorSuccessfulReviewState
+            submittedAt: string
+          } => review.state !== null,
+        )
+        .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))
+        .at(0)
+
+      if (!latest) {
+        return {
+          hasPriorSuccessfulReview: false,
+          latestReviewedSha: null,
+          latestReviewState: null,
+        }
+      }
+
+      return {
+        hasPriorSuccessfulReview: true,
+        latestReviewedSha: latest.commitId,
+        latestReviewState: latest.state,
+      }
     },
 
     async getPRInfo(context) {

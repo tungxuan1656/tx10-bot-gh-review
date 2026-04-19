@@ -198,10 +198,11 @@ Then provision TLS with your preferred method such as Let's Encrypt.
 Behavior notes:
 
 - The service uses a single global FIFO queue for all incoming review work.
-- The service reviews on `review_requested` for `GITHUB_BOT_LOGIN` and on `synchronize` while the bot remains requested.
-- If a newer commit arrives for the same PR while reviewing, the in-flight run is canceled and Codex is terminated.
+- The service reviews only on `review_requested` for `GITHUB_BOT_LOGIN`.
+- `synchronize` events are ignored and never auto-trigger review.
+- A new manual `review_requested` after a prior successful review runs fast re-review mode.
 - `review_request_removed` requests a best-effort cancellation and removes queued work for that PR.
-- When `REVIEW_APPROVED_LOCK_ENABLED=true`, commits pushed after bot approval are skipped.
+- When `REVIEW_APPROVED_LOCK_ENABLED=true`, non-manual follow-up events after bot approval can be skipped, but explicit `review_requested` remains allowed.
 
 ## Troubleshooting
 

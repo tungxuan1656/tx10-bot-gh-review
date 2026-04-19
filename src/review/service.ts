@@ -5,9 +5,9 @@ import path from 'node:path'
 import { determineReviewDecision, toReviewEvent } from './decision.js'
 import { isCommentableRightSideLine } from './patch.js'
 import {
+  buildInitialReviewPhase2Prompt,
   buildPhase1Prompt,
-  buildPhase2Prompt,
-  buildPhase3Prompt,
+  buildReReviewPrompt,
 } from './prompt.js'
 import {
   buildFailureComment,
@@ -21,18 +21,22 @@ import type { ReviewPlatform } from './github-platform.js'
 import type { NormalizedPullRequestEvent } from './webhook-event.js'
 import type {
   InlineReviewComment,
+  PriorSuccessfulReviewInfo,
   PRInfoObject,
   PullRequestContext,
   ReviewDecision,
   ReviewFinding,
   ReviewableFile,
 } from './types.js'
-import type { ReviewWorkspaceManager } from './workspace.js'
+import type {
+  AdditionalWorkspaceRevision,
+  ReviewWorkspaceManager,
+} from './workspace.js'
 
 type RoutedPullRequestEvent =
   | {
       status: 'trigger_review'
-      reason: 'review_requested' | 'synchronize'
+      reason: 'review_requested'
     }
   | {
       status: 'cancel_requested'
@@ -40,10 +44,22 @@ type RoutedPullRequestEvent =
     }
   | {
       status: 'ignored'
-      reason: 'bot_not_requested' | 'reviewer_mismatch' | 'unsupported_action'
+      reason:
+        | 'bot_not_requested'
+        | 'reviewer_mismatch'
+        | 'synchronize_ignored'
+        | 'unsupported_action'
     }
 
-type QueueCancelReason = 'cancel_requested' | 'superseded_by_new_commit'
+type QueueCancelReason = 'cancel_requested'
+
+type ReviewMode = 'initial_review' | 're_review'
+
+type ReReviewDelta = {
+  deltaFromRef: string
+  deltaToRef: string
+  fallbackReason: string | null
+}
 
 type QueueRequest = {
   enqueuedAt: number
@@ -68,6 +84,9 @@ type ReviewServiceOptions = {
 }
 
 const reviewCommentsFileName = 'pr-review-comments.md'
+const previousReviewedRefName = 'refs/codex-review/previous'
+const workspaceBaseRefName = 'refs/codex-review/base'
+const workspaceHeadRefName = 'refs/codex-review/head'
 const defaultDiscussionCacheDirectory = path.join(
   os.tmpdir(),
   'tx10-review-discussions',
@@ -225,11 +244,50 @@ function buildDecisionMismatchReason(input: {
   ].join(' ')
 }
 
+function toReviewMode(input: PriorSuccessfulReviewInfo): ReviewMode {
+  return input.hasPriorSuccessfulReview ? 're_review' : 'initial_review'
+}
+
+function resolveReReviewDelta(input: {
+  latestReviewedSha: string | null
+  currentHeadSha: string
+  availableRevisionRefs: string[]
+}): ReReviewDelta {
+  if (!input.latestReviewedSha) {
+    return {
+      deltaFromRef: workspaceBaseRefName,
+      deltaToRef: workspaceHeadRefName,
+      fallbackReason: 'latest_review_sha_unavailable',
+    }
+  }
+
+  if (input.latestReviewedSha === input.currentHeadSha) {
+    return {
+      deltaFromRef: workspaceHeadRefName,
+      deltaToRef: workspaceHeadRefName,
+      fallbackReason: null,
+    }
+  }
+
+  if (input.availableRevisionRefs.includes(previousReviewedRefName)) {
+    return {
+      deltaFromRef: previousReviewedRefName,
+      deltaToRef: workspaceHeadRefName,
+      fallbackReason: null,
+    }
+  }
+
+  return {
+    deltaFromRef: workspaceBaseRefName,
+    deltaToRef: workspaceHeadRefName,
+    fallbackReason: 'previous_review_sha_not_fetchable',
+  }
+}
+
 export class ReviewService {
   private readonly queue: QueueRequest[] = []
   private readonly queuedByPullRequestKey = new Map<string, QueueRequest>()
   private readonly approvedLockedPullRequests = new Set<string>()
-  private readonly latestHeadByPullRequest = new Map<string, string>()
 
   private readonly approvedLockEnabled: boolean
   private readonly discussionCacheDirectory: string
@@ -316,9 +374,7 @@ export class ReviewService {
     }
 
     if (event.actionKind === 'synchronize') {
-      return event.botStillRequested === true
-        ? { status: 'trigger_review', reason: 'synchronize' }
-        : { status: 'ignored', reason: 'bot_not_requested' }
+      return { status: 'ignored', reason: 'synchronize_ignored' }
     }
 
     return {
@@ -336,7 +392,8 @@ export class ReviewService {
 
     if (
       this.approvedLockEnabled &&
-      this.approvedLockedPullRequests.has(pullRequestKey)
+      this.approvedLockedPullRequests.has(pullRequestKey) &&
+      event.actionKind !== 'review_requested'
     ) {
       deliveryLogger.info(
         {
@@ -347,15 +404,6 @@ export class ReviewService {
         'Review queued event ignored',
       )
       return
-    }
-
-    const currentLatestSha = this.latestHeadByPullRequest.get(pullRequestKey)
-    if (
-      !currentLatestSha ||
-      currentLatestSha === context.headSha ||
-      this.isVerifiedLaterHead(currentLatestSha, event)
-    ) {
-      this.latestHeadByPullRequest.set(pullRequestKey, context.headSha)
     }
 
     const inFlightRun = this.activeRun
@@ -401,19 +449,6 @@ export class ReviewService {
 
     this.queue.push(request)
     this.queuedByPullRequestKey.set(pullRequestKey, request)
-
-    if (
-      inFlightRun &&
-      inFlightRun.pullRequestKey === pullRequestKey &&
-      inFlightRun.context.headSha !== context.headSha &&
-      this.isVerifiedLaterHead(inFlightRun.context.headSha, event)
-    ) {
-      this.requestRunCancellation(
-        inFlightRun,
-        'superseded_by_new_commit',
-        deliveryLogger,
-      )
-    }
 
     deliveryLogger.info(
       {
@@ -489,21 +524,6 @@ export class ReviewService {
     return true
   }
 
-  /**
-   * Returns true only when `event` is a `synchronize` whose `beforeSha` directly
-   * chains from `currentSha`, meaning it is a verifiable forward progression in
-   * the commit history.  Any other event type (including a delayed
-   * `review_requested` for an older commit) returns false, preventing stale
-   * out-of-order webhooks from overwriting a newer tracked SHA or cancelling
-   * an in-flight review that is still current.
-   */
-  private isVerifiedLaterHead(
-    currentSha: string,
-    event: NormalizedPullRequestEvent,
-  ): boolean {
-    return event.actionKind === 'synchronize' && event.beforeSha === currentSha
-  }
-
   private requestRunCancellation(
     run: ActiveRun,
     reason: QueueCancelReason,
@@ -532,17 +552,6 @@ export class ReviewService {
     run: ActiveRun,
     stage: string,
   ): boolean {
-    const latestHeadSha = this.latestHeadByPullRequest.get(run.pullRequestKey)
-
-    if (
-      latestHeadSha &&
-      latestHeadSha !== run.context.headSha &&
-      !run.abortController.signal.aborted
-    ) {
-      run.cancellationReason = 'superseded_by_new_commit'
-      run.abortController.abort()
-    }
-
     if (!run.abortController.signal.aborted) {
       return false
     }
@@ -590,30 +599,14 @@ export class ReviewService {
 
         if (
           this.approvedLockEnabled &&
-          this.approvedLockedPullRequests.has(pullRequestKey)
+          this.approvedLockedPullRequests.has(pullRequestKey) &&
+          queuedRequest.event.actionKind !== 'review_requested'
         ) {
           const logger = this.createDeliveryLogger(queuedRequest.event)
           logger.info(
             {
               event: 'review.queue_ignored',
               reason: 'approved_locked',
-              status: 'ignored',
-            },
-            'Review queued event ignored',
-          )
-          queuedRequest.resolveCompletion()
-          continue
-        }
-
-        const latestHeadSha = this.latestHeadByPullRequest.get(pullRequestKey)
-        if (latestHeadSha && latestHeadSha !== context.headSha) {
-          const logger = this.createDeliveryLogger(queuedRequest.event)
-          logger.info(
-            {
-              event: 'review.queue_ignored',
-              latestHeadSha,
-              queuedHeadSha: context.headSha,
-              reason: 'superseded_queued_head',
               status: 'ignored',
             },
             'Review queued event ignored',
@@ -757,7 +750,7 @@ export class ReviewService {
     const context = toPullRequestContext(event)
     const pullRequestKey = buildPullRequestKey(context)
     const runKey = buildRunKey(context)
-    const marker = buildReviewMarker(context.headSha)
+    const marker = buildReviewMarker(context.headSha, event.deliveryId)
     const startedAt = Date.now()
     const runLogger = createChildLogger(deliveryLogger, {
       runKey,
@@ -835,6 +828,24 @@ export class ReviewService {
         return
       }
 
+      const priorSuccessfulReview = await this.github.getPriorSuccessfulReview(
+        context,
+      )
+      const reviewMode = toReviewMode(priorSuccessfulReview)
+
+      runLogger.info(
+        {
+          event: 'review.mode_selected',
+          hasPriorSuccessfulReview:
+            priorSuccessfulReview.hasPriorSuccessfulReview,
+          latestReviewedSha: priorSuccessfulReview.latestReviewedSha,
+          latestReviewState: priorSuccessfulReview.latestReviewState,
+          reviewMode,
+          status: 'completed',
+        },
+        'Review mode selected',
+      )
+
       // Step 1: Fetch PR intelligence package before workspace setup
       const prInfo: PRInfoObject = await this.github.getPRInfo(context)
 
@@ -852,12 +863,29 @@ export class ReviewService {
         return
       }
 
+      const additionalRevisions: AdditionalWorkspaceRevision[] =
+        reviewMode === 're_review' &&
+        priorSuccessfulReview.latestReviewedSha &&
+        priorSuccessfulReview.latestReviewedSha !== context.headSha
+          ? [
+              {
+                revision: priorSuccessfulReview.latestReviewedSha,
+                fallbackRef: context.headRef,
+                localRef: previousReviewedRefName,
+                remote: 'head',
+              },
+            ]
+          : []
+
       const workspace = await this.workspaceManager.prepareWorkspace(
         context,
         prInfo,
         createChildLogger(runLogger, {
           component: 'workspace',
         }),
+        {
+          additionalRevisions,
+        },
       )
 
       try {
@@ -912,55 +940,101 @@ export class ReviewService {
           return
         }
 
-        const phase1Prompt = buildPhase1Prompt({
-          owner: context.owner,
-          repo: context.repo,
-          pullNumber: context.pullNumber,
-          title: context.title,
-          headSha: context.headSha,
-          prInfoFilePath: 'pr-info.yaml',
-        })
-
-        runLogger.info(
-          {
-            event: 'review.prompts_built',
-            phase1PromptChars: phase1Prompt.length,
-            reviewableFileCount: workspace.reviewableFiles.length,
-            status: 'completed',
-          },
-          'Review prompts built',
+        const reviewablePaths = workspace.reviewableFiles.map(
+          (file) => file.path,
         )
 
-        const outcome = await this.codex.reviewChained(
-          {
-            abortSignal: run.abortController.signal,
-            phase1Prompt,
-            phase2Prompt: (phase1Out) =>
-              buildPhase2Prompt({
-                phase1Summary: phase1Out,
-                reviewablePaths: workspace.reviewableFiles.map(
-                  (file) => file.path,
-                ),
-              }),
-            phase3Prompt: (phase2Out) =>
-              buildPhase3Prompt({
-                owner: context.owner,
-                repo: context.repo,
-                pullNumber: context.pullNumber,
-                title: context.title,
-                headSha: context.headSha,
-                changesOverview: phase2Out,
-                discussionFilePath: reviewCommentsFileName,
-                reviewablePaths: workspace.reviewableFiles.map(
-                  (file) => file.path,
-                ),
-              }),
-            workingDirectory: workspace.workingDirectory,
-          },
-          createChildLogger(runLogger, {
-            component: 'codex',
-          }),
-        )
+        const outcome =
+          reviewMode === 'initial_review'
+            ? await (() => {
+                const phase1Prompt = buildPhase1Prompt({
+                  owner: context.owner,
+                  repo: context.repo,
+                  pullNumber: context.pullNumber,
+                  title: context.title,
+                  headSha: context.headSha,
+                  prInfoFilePath: 'pr-info.yaml',
+                })
+
+                runLogger.info(
+                  {
+                    event: 'review.prompts_built',
+                    phase1PromptChars: phase1Prompt.length,
+                    reviewMode,
+                    reviewableFileCount: workspace.reviewableFiles.length,
+                    status: 'completed',
+                  },
+                  'Review prompts built',
+                )
+
+                return this.codex.reviewTwoPhase(
+                  {
+                    abortSignal: run.abortController.signal,
+                    phase1Prompt,
+                    phase2Prompt: (phase1Summary) =>
+                      buildInitialReviewPhase2Prompt({
+                        owner: context.owner,
+                        repo: context.repo,
+                        pullNumber: context.pullNumber,
+                        title: context.title,
+                        headSha: context.headSha,
+                        phase1Summary,
+                        discussionFilePath: reviewCommentsFileName,
+                        reviewablePaths,
+                      }),
+                    workingDirectory: workspace.workingDirectory,
+                  },
+                  createChildLogger(runLogger, {
+                    component: 'codex',
+                  }),
+                )
+              })()
+            : await (() => {
+                const delta = resolveReReviewDelta({
+                  latestReviewedSha: priorSuccessfulReview.latestReviewedSha,
+                  currentHeadSha: context.headSha,
+                  availableRevisionRefs: workspace.availableRevisionRefs,
+                })
+
+                const prompt = buildReReviewPrompt({
+                  owner: context.owner,
+                  repo: context.repo,
+                  pullNumber: context.pullNumber,
+                  title: context.title,
+                  headSha: context.headSha,
+                  discussionFilePath: reviewCommentsFileName,
+                  reviewablePaths,
+                  deltaFromRef: delta.deltaFromRef,
+                  deltaToRef: delta.deltaToRef,
+                  deltaFromSha: priorSuccessfulReview.latestReviewedSha,
+                  fallbackReason: delta.fallbackReason,
+                })
+
+                runLogger.info(
+                  {
+                    deltaFromRef: delta.deltaFromRef,
+                    deltaToRef: delta.deltaToRef,
+                    event: 'review.prompts_built',
+                    fallbackReason: delta.fallbackReason,
+                    promptChars: prompt.length,
+                    reviewMode,
+                    reviewableFileCount: workspace.reviewableFiles.length,
+                    status: 'completed',
+                  },
+                  'Review prompts built',
+                )
+
+                return this.codex.review(
+                  {
+                    abortSignal: run.abortController.signal,
+                    prompt,
+                    workingDirectory: workspace.workingDirectory,
+                  },
+                  createChildLogger(runLogger, {
+                    component: 'codex',
+                  }),
+                )
+              })()
 
         if (!outcome.ok) {
           if (
@@ -983,6 +1057,7 @@ export class ReviewService {
             context,
             buildFailureComment({
               headSha: context.headSha,
+              runToken: event.deliveryId,
               reason: outcome.reason,
             }),
           )
@@ -1027,6 +1102,7 @@ export class ReviewService {
             context,
             buildFailureComment({
               headSha: context.headSha,
+              runToken: event.deliveryId,
               reason,
             }),
           )
@@ -1057,6 +1133,7 @@ export class ReviewService {
 
         const body = buildReviewBody({
           headSha: context.headSha,
+          runToken: event.deliveryId,
           score: outcome.result.score,
           summary: outcome.result.summary,
           ...(outcome.result.changesOverview
@@ -1067,6 +1144,7 @@ export class ReviewService {
         })
         const fallbackBody = buildReviewBody({
           headSha: context.headSha,
+          runToken: event.deliveryId,
           score: outcome.result.score,
           summary: outcome.result.summary,
           ...(outcome.result.changesOverview
@@ -1170,6 +1248,7 @@ export class ReviewService {
           context,
           buildFailureComment({
             headSha: context.headSha,
+            runToken: event.deliveryId,
             reason:
               'The review pipeline failed before it could submit a review.',
           }),

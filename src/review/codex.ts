@@ -60,7 +60,7 @@ const codexOutputJsonSchema = {
       },
     },
   },
-  required: ['summary', 'changesOverview', 'score', 'decision', 'findings'],
+  required: ['summary', 'score', 'decision', 'findings'],
   additionalProperties: false,
 } as const
 
@@ -110,6 +110,16 @@ export type CodexRunner = {
   review(
     input: {
       prompt: string
+      workingDirectory: string
+      abortSignal?: AbortSignal
+    },
+    logger?: AppLogger,
+  ): Promise<CodexReviewOutcome>
+
+  reviewTwoPhase(
+    input: {
+      phase1Prompt: string
+      phase2Prompt: (phase1Output: string) => string
       workingDirectory: string
       abortSignal?: AbortSignal
     },
@@ -623,6 +633,117 @@ export function createCodexRunner(input: {
             status: 'failed',
           },
           'Codex chained review failed',
+        )
+        return {
+          ok: false,
+          reason: 'Codex review process could not be started or parsed safely.',
+        }
+      }
+    },
+
+    async reviewTwoPhase(
+      chainedInput: {
+        phase1Prompt: string
+        phase2Prompt: (phase1Output: string) => string
+        workingDirectory: string
+        abortSignal?: AbortSignal
+      },
+      loggerOverride?: AppLogger,
+    ): Promise<CodexReviewOutcome> {
+      if (chainedInput.abortSignal?.aborted) {
+        return { ok: false, reason: 'Codex review canceled.', cancelled: true }
+      }
+
+      const logger = loggerOverride ?? input.logger
+      const startedAt = Date.now()
+
+      logger.debug(
+        {
+          component: 'codex',
+          event: 'codex.two_phase_started',
+          status: 'started',
+          timeoutMs,
+          model: input.model,
+          workingDirectory: chainedInput.workingDirectory,
+        },
+        'Codex two-phase review started',
+      )
+
+      try {
+        const phase1Result = await runCodexPhase({
+          prompt: chainedInput.phase1Prompt,
+          workingDirectory: chainedInput.workingDirectory,
+          abortSignal: chainedInput.abortSignal,
+          validateJson: false,
+          phaseLabel: 'phase1',
+          logger,
+        })
+
+        if (!phase1Result.ok) {
+          return phase1Result
+        }
+
+        const phase2Result = await runCodexPhase({
+          prompt: chainedInput.phase2Prompt(phase1Result.output),
+          workingDirectory: chainedInput.workingDirectory,
+          abortSignal: chainedInput.abortSignal,
+          validateJson: true,
+          phaseLabel: 'phase2',
+          logger,
+        })
+
+        if (!phase2Result.ok) {
+          return phase2Result
+        }
+
+        const parsed: unknown = JSON.parse(phase2Result.output)
+        const result = reviewResultSchema.safeParse(parsed)
+
+        if (!result.success) {
+          logger.warn(
+            {
+              component: 'codex',
+              durationMs: Date.now() - startedAt,
+              event: 'codex.failed',
+              issues: result.error.issues,
+              outputChars: phase2Result.output.length,
+              reason: 'invalid_json',
+              status: 'failed',
+              workingDirectory: chainedInput.workingDirectory,
+            },
+            'Codex two-phase review failed',
+          )
+          return {
+            ok: false,
+            reason: 'Codex returned JSON that did not match the review schema.',
+          }
+        }
+
+        logger.info(
+          {
+            component: 'codex',
+            decision: result.data.decision,
+            durationMs: Date.now() - startedAt,
+            event: 'codex.completed',
+            findingCount: result.data.findings.length,
+            score: result.data.score,
+            status: 'completed',
+            workingDirectory: chainedInput.workingDirectory,
+          },
+          'Codex two-phase review completed',
+        )
+
+        return { ok: true, result: result.data }
+      } catch (error) {
+        logger.error(
+          {
+            component: 'codex',
+            error,
+            event: 'codex.failed',
+            reason: 'process_error',
+            status: 'failed',
+          },
+          'Codex two-phase review failed',
         )
         return {
           ok: false,

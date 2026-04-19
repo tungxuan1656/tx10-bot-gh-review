@@ -1,8 +1,12 @@
 import { sortFindingsBySeverity } from './decision.js'
 import type { ReviewEvent, ReviewFinding } from './types.js'
 
-export function buildReviewMarker(headSha: string): string {
-  return `<!-- ai-review-bot:sha=${headSha} -->`
+export function buildReviewMarker(headSha: string, runToken?: string): string {
+  if (!runToken) {
+    return `<!-- ai-review-bot:sha=${headSha} -->`
+  }
+
+  return `<!-- ai-review-bot:sha=${headSha};run=${runToken} -->`
 }
 
 function renderFinding(finding: ReviewFinding): string {
@@ -11,6 +15,7 @@ function renderFinding(finding: ReviewFinding): string {
 
 export function buildReviewBody(input: {
   headSha: string
+  runToken?: string
   score: number
   summary: string
   changesOverview?: string
@@ -37,7 +42,7 @@ export function buildReviewBody(input: {
         ].join('\n')
 
   return [
-    buildReviewMarker(input.headSha),
+    buildReviewMarker(input.headSha, input.runToken),
     '## Codex Review',
     '',
     `${statusLine}`,
@@ -53,10 +58,11 @@ export function buildReviewBody(input: {
 
 export function buildFailureComment(input: {
   headSha: string
+  runToken?: string
   reason: string
 }): string {
   return [
-    buildReviewMarker(input.headSha),
+    buildReviewMarker(input.headSha, input.runToken),
     '## Codex Review',
     '',
     'The bot could not complete an AI review for this revision.',
