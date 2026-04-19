@@ -42,6 +42,11 @@ async function createFakeCodexBinary(): Promise<{
       "  process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));",
       "  process.stdin.on('error', reject);",
       '});',
+      "const schemaIndex = args.indexOf('--output-schema');",
+      'const outputSchema =',
+      '  schemaIndex >= 0',
+      "    ? JSON.parse(await readFile(args[schemaIndex + 1], 'utf8'))",
+      '    : null;',
       "const outputIndex = args.indexOf('--output-last-message');",
       'const outputPath = args[outputIndex + 1];',
       'await writeFile(',
@@ -50,6 +55,7 @@ async function createFakeCodexBinary(): Promise<{
       '    args,',
       '    cwd: process.cwd(),',
       '    stdin,',
+      '    outputSchema,',
       '  }),',
       ');',
       'await writeFile(',
@@ -124,6 +130,7 @@ describe('reviewResultSchema', () => {
   it('accepts the expected Codex response shape', () => {
     const parsed = reviewResultSchema.safeParse({
       summary: 'Looks mostly good.',
+      changesOverview: '',
       score: 8.5,
       decision: 'approve',
       findings: [
@@ -170,7 +177,7 @@ describe('reviewResultSchema', () => {
     expect(parsed.success).toBe(false)
   })
 
-  it('accepts an optional changesOverview field', () => {
+  it('accepts explicit and missing changesOverview values', () => {
     const withOverview = reviewResultSchema.safeParse({
       summary: 'Looks good.',
       changesOverview: 'Added a new validation step.',
@@ -180,13 +187,13 @@ describe('reviewResultSchema', () => {
     })
     expect(withOverview.success).toBe(true)
 
-    const withoutOverview = reviewResultSchema.safeParse({
+    const withoutOverview = reviewResultSchema.parse({
       summary: 'Looks good.',
       score: 9,
       decision: 'approve',
       findings: [],
     })
-    expect(withoutOverview.success).toBe(true)
+    expect(withoutOverview.changesOverview).toBe('')
   })
 })
 
@@ -243,6 +250,7 @@ describe('createCodexRunner', () => {
       ok: true,
       result: {
         summary: 'ok',
+        changesOverview: '',
         score: 9,
         decision: 'approve',
         findings: [],
@@ -253,6 +261,10 @@ describe('createCodexRunner', () => {
       args: string[]
       cwd: string
       stdin: string
+      outputSchema: {
+        properties: Record<string, unknown>
+        required: string[]
+      } | null
     }
 
     expect(capture.args).toContain('exec')
@@ -264,6 +276,10 @@ describe('createCodexRunner', () => {
     expect(capture.args).toContain('--output-last-message')
     expect(capture.stdin).toBe('Review this diff')
     expect(capture.cwd).toBe(process.cwd())
+
+    expect(capture.outputSchema).not.toBeNull()
+    expect(capture.outputSchema?.properties).toHaveProperty('changesOverview')
+    expect(capture.outputSchema?.required).toContain('changesOverview')
   })
 
   it('times out using the configured timeout and logs bounded output previews', async () => {

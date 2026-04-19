@@ -110,6 +110,11 @@ function createCompletion(): {
   }
 }
 
+function normalizeOptionalText(value: string): string | undefined {
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
 function toPullRequestContext(
   event: NormalizedPullRequestEvent,
 ): PullRequestContext {
@@ -1145,13 +1150,17 @@ export class ReviewService {
           return
         }
 
+        const normalizedChangesOverview = normalizeOptionalText(
+          outcome.result.changesOverview,
+        )
+
         const body = buildReviewBody({
           headSha: context.headSha,
           runToken: event.deliveryId,
           score: outcome.result.score,
           summary: outcome.result.summary,
-          ...(outcome.result.changesOverview
-            ? { changesOverview: outcome.result.changesOverview }
+          ...(normalizedChangesOverview
+            ? { changesOverview: normalizedChangesOverview }
             : {}),
           event: reviewEvent,
           overflowFindings,
@@ -1161,8 +1170,8 @@ export class ReviewService {
           runToken: event.deliveryId,
           score: outcome.result.score,
           summary: outcome.result.summary,
-          ...(outcome.result.changesOverview
-            ? { changesOverview: outcome.result.changesOverview }
+          ...(normalizedChangesOverview
+            ? { changesOverview: normalizedChangesOverview }
             : {}),
           event: reviewEvent,
           overflowFindings: outcome.result.findings,

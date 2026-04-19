@@ -63,8 +63,9 @@ Prompt requirements:
 
 Output contract:
 
-- JSON object with `summary`, `score`, `decision`, `findings`.
-- `changesOverview` is optional. If model has useful overview, return it; if not, omit it.
+- JSON object with `summary`, `changesOverview`, `score`, `decision`, `findings`.
+- `changesOverview` key is always required in model JSON for output-schema compatibility.
+- If model has no meaningful overview, set `changesOverview` to an empty string.
 
 ## 4. Re-review Flow (Second Request Onward)
 
@@ -96,7 +97,7 @@ Prompt requirements:
 Output contract:
 
 - Same JSON schema as initial flow.
-- `changesOverview` remains optional.
+- `changesOverview` key remains required; empty string means no overview.
 
 ## 5. Publish Rules
 
@@ -109,7 +110,7 @@ Additional notes:
 
 - Inline comments should be published when location is valid.
 - If inline target is invalid, fallback to top-level review body and do not fail entire review.
-- Include `changesOverview` in body only when present.
+- Include `changesOverview` in body only when non-empty.
 
 ## 6. Idempotency and Retry Expectations
 

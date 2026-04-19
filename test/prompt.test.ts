@@ -39,6 +39,7 @@ describe('prompt builders', () => {
     )
     expect(prompt).toContain('Required JSON shape:')
     expect(prompt).toContain('changesOverview')
+    expect(prompt).toContain('always include this key')
     expect(prompt).toContain(
       "git diff --name-status refs/codex-review/base refs/codex-review/head -- 'src/review/service.ts'",
     )
@@ -66,6 +67,7 @@ describe('prompt builders', () => {
     expect(prompt).toContain(
       'Delta fallback applied: previous_review_sha_not_fetchable',
     )
+    expect(prompt).toContain('always include this key')
     expect(prompt).toContain('Do not re-review the entire PR from scratch')
   })
 })

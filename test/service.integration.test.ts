@@ -77,6 +77,7 @@ function createReviewResult(
 ): ReviewResult {
   return {
     summary: 'No issues.',
+    changesOverview: '',
     score: 9,
     decision: 'approve',
     findings: [],

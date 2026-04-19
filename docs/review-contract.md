@@ -42,7 +42,9 @@ The Codex prompt contract keeps the review pipeline deterministic. The bot asks 
 
 Optional JSON field:
 
-- `changesOverview` may be included when it adds value; it is not required for schema validity
+- `changesOverview` key must always be present in model JSON to satisfy the output-schema contract.
+- When there is no meaningful overview, set `changesOverview` to an empty string.
+- Publishing logic treats empty `changesOverview` as absent and does not render a section.
 
 ## Deterministic Decision Mapping
 

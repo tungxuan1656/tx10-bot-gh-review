@@ -17,7 +17,7 @@ export const reviewFindingSchema = z.object({
 
 export const reviewResultSchema = z.object({
   summary: z.string().min(1),
-  changesOverview: z.string().optional(),
+  changesOverview: z.string().default(''),
   score: z.number().min(0).max(10),
   decision: z.enum(['approve', 'request_changes']),
   findings: z.array(reviewFindingSchema),

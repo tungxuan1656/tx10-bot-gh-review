@@ -116,7 +116,7 @@ export function buildInitialReviewPhase2Prompt(input: {
       {
         summary: 'string',
         changesOverview:
-          'string (optional; include only when it adds value, otherwise omit this key)',
+          'string (always include this key; use an empty string when there is no meaningful overview)',
         score: 0,
         decision: 'approve',
         findings: [
@@ -198,7 +198,7 @@ export function buildReReviewPrompt(input: {
       {
         summary: 'string',
         changesOverview:
-          'string (optional; include only when it adds value, otherwise omit this key)',
+          'string (always include this key; use an empty string when there is no meaningful overview)',
         score: 0,
         decision: 'approve',
         findings: [
