@@ -190,7 +190,7 @@ Behavior notes:
 - `synchronize` events are ignored and never auto-trigger review.
 - A new manual `review_requested` after a prior successful review runs fast re-review mode.
 - Removing the bot as a reviewer issues a best-effort cancellation request for the current in-flight run.
-- With approved lock enabled, non-manual follow-up events after a bot `APPROVE` can be skipped, while explicit `review_requested` is still allowed.
+- With approved lock enabled, all subsequent PR requests after a bot `APPROVE` are ignored with reason `approved_before`.
 
 ## Troubleshooting
 

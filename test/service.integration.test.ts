@@ -409,7 +409,7 @@ describe('ReviewService', () => {
     )
   })
 
-  it('does not block explicit re-request after prior approve when approved lock is enabled', async () => {
+  it('ignores subsequent requests after approve with approved reason', async () => {
     const getPriorSuccessfulReview = vi
       .fn()
       .mockResolvedValueOnce(
@@ -447,11 +447,13 @@ describe('ReviewService', () => {
       reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
     })
 
+    const logger = createLoggerStub()
+
     const service = new ReviewService(
       github.platform,
       codex,
       workspace.manager,
-      createLoggerStub(),
+      logger,
       'review-bot',
       {
         approvedLockEnabled: true,
@@ -466,8 +468,16 @@ describe('ReviewService', () => {
     )
 
     expect(reviewTwoPhase).toHaveBeenCalledTimes(1)
-    expect(review).toHaveBeenCalledTimes(1)
-    expect(github.mocks.publishReview).toHaveBeenCalledTimes(2)
+    expect(review).not.toHaveBeenCalled()
+    expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'webhook.routed',
+        reason: 'approved_before',
+        status: 'ignored',
+      }),
+      'Webhook routed',
+    )
   })
 
   it('keeps classifying as initial review when first run failed to publish successful review', async () => {
@@ -521,7 +531,7 @@ describe('ReviewService', () => {
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
   })
 
-  it('allows manual re-request on same head SHA using run-token marker dedupe', async () => {
+  it('allows manual re-request on same head SHA using run-token marker dedupe when approved lock is disabled', async () => {
     const getPriorSuccessfulReview = vi.fn().mockResolvedValue(
       createPriorReviewInfo({
         hasPriorSuccessfulReview: false,
@@ -551,6 +561,9 @@ describe('ReviewService', () => {
       workspace.manager,
       createLoggerStub(),
       'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
     )
 
     await service.handlePullRequestEvent(

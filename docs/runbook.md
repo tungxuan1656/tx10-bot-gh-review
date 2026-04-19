@@ -44,7 +44,7 @@ Expected response:
 - Confirm `requested_reviewer.login` matched `GITHUB_BOT_LOGIN`
 - Confirm the PR includes reviewable file types with patch hunks
 - Check whether this delivery run token already has a marker comment or review from a prior run
-- Check whether the PR is approved-locked and `REVIEW_APPROVED_LOCK_ENABLED=true` (explicit `review_requested` remains allowed)
+- Check whether the PR is approved-locked and `REVIEW_APPROVED_LOCK_ENABLED=true` (all subsequent PR requests are ignored with reason `approved_before`)
 - Check whether a later `review_request_removed` canceled the in-flight run before publish
 
 ### Inline findings were moved into the summary
@@ -59,7 +59,7 @@ Expected response:
 - `synchronize` events are ignored; only explicit `review_requested` starts a run.
 - Initial review runs in 2 phases, while re-review runs in 1 fast phase.
 - Discussion context is fetched from GitHub per run and stored in `pr-review-comments.md` inside the workspace, with cached snapshots cleaned by TTL.
-- A bot `APPROVE` can lock the PR from further auto-review when `REVIEW_APPROVED_LOCK_ENABLED=true`, while explicit `review_requested` still runs.
+- A bot `APPROVE` can lock the PR from further review when `REVIEW_APPROVED_LOCK_ENABLED=true`; all subsequent PR requests are ignored with reason `approved_before`.
 - The fallback comment is intentionally neutral and never blocks merging on transient infrastructure failures.
 - Non-blocking findings are still published as an `APPROVE` review when the response decision is consistent with the severity policy.
 

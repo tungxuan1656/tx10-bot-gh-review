@@ -202,7 +202,7 @@ Behavior notes:
 - `synchronize` events are ignored and never auto-trigger review.
 - A new manual `review_requested` after a prior successful review runs fast re-review mode.
 - `review_request_removed` requests a best-effort cancellation and removes queued work for that PR.
-- When `REVIEW_APPROVED_LOCK_ENABLED=true`, non-manual follow-up events after bot approval can be skipped, but explicit `review_requested` remains allowed.
+- When `REVIEW_APPROVED_LOCK_ENABLED=true`, all subsequent PR requests after bot approval are ignored with reason `approved_before`.
 
 ## Troubleshooting
 

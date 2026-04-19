@@ -45,6 +45,7 @@ type RoutedPullRequestEvent =
   | {
       status: 'ignored'
       reason:
+        | 'approved_before'
         | 'reviewer_mismatch'
         | 'synchronize_ignored'
         | 'unsupported_action'
@@ -83,6 +84,7 @@ type ReviewServiceOptions = {
 }
 
 const reviewCommentsFileName = 'pr-review-comments.md'
+const approvedIgnoredReason = 'approved_before'
 const previousReviewedRefName = 'refs/codex-review/previous'
 const workspaceBaseRefName = 'refs/codex-review/base'
 const workspaceHeadRefName = 'refs/codex-review/head'
@@ -314,7 +316,15 @@ export class ReviewService {
     event: NormalizedPullRequestEvent,
   ): Promise<void> {
     const deliveryLogger = this.createDeliveryLogger(event)
-    const routedEvent = this.routePullRequestEvent(event)
+    const pullRequestKey = buildPullRequestKey(toPullRequestContext(event))
+    const routedEvent =
+      this.approvedLockEnabled &&
+      this.approvedLockedPullRequests.has(pullRequestKey)
+        ? ({
+            status: 'ignored',
+            reason: approvedIgnoredReason,
+          } as const)
+        : this.routePullRequestEvent(event)
 
     deliveryLogger.info(
       {
