@@ -92,6 +92,17 @@ export type ReviewDecision = z.infer<typeof reviewResultSchema.shape.decision>
 
 export type ReviewEvent = 'APPROVE' | 'REQUEST_CHANGES'
 
+export type PriorSuccessfulReviewState =
+  | 'APPROVED'
+  | 'CHANGES_REQUESTED'
+  | 'COMMENTED'
+
+export type PriorSuccessfulReviewInfo = {
+  hasPriorSuccessfulReview: boolean
+  latestReviewedSha: string | null
+  latestReviewState: PriorSuccessfulReviewState | null
+}
+
 export type InlineReviewComment = {
   path: string
   line: number

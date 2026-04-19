@@ -354,4 +354,132 @@ describe('createGitHubReviewPlatform', () => {
     expect(result.repo).toBe('repo')
     expect(result.pullNumber).toBe(42)
   })
+
+  it('returns no prior successful review when bot has no qualifying review states', async () => {
+    const listReviews = vi.fn()
+    const paginate = vi.fn((route: unknown) => {
+      if (route === listReviews) {
+        return Promise.resolve([
+          {
+            commit_id: 'sha-human',
+            state: 'APPROVED',
+            submitted_at: '2026-04-15T00:01:00Z',
+            user: { login: 'teammate' },
+          },
+          {
+            commit_id: 'sha-bot-pending',
+            state: 'PENDING',
+            submitted_at: '2026-04-15T00:02:00Z',
+            user: { login: 'review-bot' },
+          },
+        ])
+      }
+
+      return Promise.resolve([])
+    })
+
+    const platform = createGitHubReviewPlatform(
+      {
+        githubToken: 'ghp_test_token',
+        githubBotLogin: 'review-bot',
+      },
+      {
+        createOctokit: () =>
+          ({
+            paginate,
+            rest: {
+              pulls: {
+                listFiles: vi.fn(),
+                listReviews,
+                listReviewComments: vi.fn(),
+                listCommits: vi.fn(),
+                createReview: vi.fn(),
+                get: vi.fn(),
+              },
+              issues: {
+                listComments: vi.fn(),
+                createComment: vi.fn(),
+              },
+              repos: {
+                getContent: vi.fn(),
+              },
+            },
+          }) as never,
+      },
+    )
+
+    const result = await platform.getPriorSuccessfulReview(
+      createPullRequestContext(),
+    )
+
+    expect(result).toEqual({
+      hasPriorSuccessfulReview: false,
+      latestReviewedSha: null,
+      latestReviewState: null,
+    })
+  })
+
+  it('returns latest successful bot review metadata for re-review mode selection', async () => {
+    const listReviews = vi.fn()
+    const paginate = vi.fn((route: unknown) => {
+      if (route === listReviews) {
+        return Promise.resolve([
+          {
+            commit_id: 'sha-old',
+            state: 'CHANGES_REQUESTED',
+            submitted_at: '2026-04-15T00:01:00Z',
+            user: { login: 'review-bot' },
+          },
+          {
+            commit_id: 'sha-new',
+            state: 'COMMENTED',
+            submitted_at: '2026-04-16T00:01:00Z',
+            user: { login: 'review-bot' },
+          },
+        ])
+      }
+
+      return Promise.resolve([])
+    })
+
+    const platform = createGitHubReviewPlatform(
+      {
+        githubToken: 'ghp_test_token',
+        githubBotLogin: 'review-bot',
+      },
+      {
+        createOctokit: () =>
+          ({
+            paginate,
+            rest: {
+              pulls: {
+                listFiles: vi.fn(),
+                listReviews,
+                listReviewComments: vi.fn(),
+                listCommits: vi.fn(),
+                createReview: vi.fn(),
+                get: vi.fn(),
+              },
+              issues: {
+                listComments: vi.fn(),
+                createComment: vi.fn(),
+              },
+              repos: {
+                getContent: vi.fn(),
+              },
+            },
+          }) as never,
+      },
+    )
+
+    const result = await platform.getPriorSuccessfulReview(
+      createPullRequestContext(),
+    )
+
+    expect(result).toEqual({
+      hasPriorSuccessfulReview: true,
+      latestReviewedSha: 'sha-new',
+      latestReviewState: 'COMMENTED',
+    })
+  })
 })

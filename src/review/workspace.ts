@@ -27,6 +27,7 @@ const headRefName = 'refs/codex-review/head'
 const maxDiffChars = 80_000
 
 export type PreparedReviewWorkspace = {
+  availableRevisionRefs: string[]
   cleanup(): Promise<void>
   diff: string
   prInfo: PRInfoObject
@@ -34,11 +35,23 @@ export type PreparedReviewWorkspace = {
   workingDirectory: string
 }
 
+export type AdditionalWorkspaceRevision = {
+  revision: string
+  fallbackRef: string
+  localRef: string
+  remote?: 'origin' | 'head'
+}
+
+export type WorkspacePrepareOptions = {
+  additionalRevisions?: AdditionalWorkspaceRevision[]
+}
+
 export type ReviewWorkspaceManager = {
   prepareWorkspace(
     context: PullRequestContext,
     prInfo: PRInfoObject,
     loggerOverride?: AppLogger,
+    options?: WorkspacePrepareOptions,
   ): Promise<PreparedReviewWorkspace>
 }
 
@@ -391,6 +404,7 @@ export function createTemporaryReviewWorkspaceManager(
       context: PullRequestContext,
       prInfo: PRInfoObject,
       loggerOverride?: AppLogger,
+      options?: WorkspacePrepareOptions,
     ): Promise<PreparedReviewWorkspace> {
       const logger = loggerOverride ?? input.logger
       const startedAt = Date.now()
@@ -467,6 +481,37 @@ export function createTemporaryReviewWorkspaceManager(
           revision: context.headSha,
           timeoutMs,
         })
+
+        const availableRevisionRefs = [baseRefName, headRefName]
+        for (const revision of options?.additionalRevisions ?? []) {
+          try {
+            await fetchRevision({
+              cwd: workingDirectory,
+              fallbackRef: revision.fallbackRef,
+              gitBin,
+              localRef: revision.localRef,
+              remote:
+                revision.remote === 'origin' ? 'origin' : headRemoteName,
+              redactions: commandRedactions,
+              revision: revision.revision,
+              timeoutMs,
+            })
+            availableRevisionRefs.push(revision.localRef)
+          } catch (error) {
+            logger.warn(
+              {
+                component: 'workspace',
+                error,
+                event: 'workspace.additional_revision_unavailable',
+                fallbackRef: revision.fallbackRef,
+                localRef: revision.localRef,
+                revision: revision.revision,
+                status: 'fallback',
+              },
+              'Workspace additional revision unavailable',
+            )
+          }
+        }
 
         await runCommand({
           args: ['checkout', '--detach', headRefName],
@@ -569,6 +614,7 @@ export function createTemporaryReviewWorkspaceManager(
         )
 
         return {
+          availableRevisionRefs,
           cleanup,
           diff,
           prInfo,

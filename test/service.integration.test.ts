@@ -5,8 +5,15 @@ import type { CodexRunner } from '../src/review/codex.js'
 import type { ReviewPlatform } from '../src/review/github-platform.js'
 import type { AppLogger } from '../src/logger.js'
 import type { NormalizedPullRequestEvent } from '../src/review/webhook-event.js'
-import type { PRInfoObject } from '../src/review/types.js'
-import type { ReviewWorkspaceManager } from '../src/review/workspace.js'
+import type {
+  PRInfoObject,
+  PriorSuccessfulReviewInfo,
+  ReviewResult,
+} from '../src/review/types.js'
+import type {
+  ReviewWorkspaceManager,
+  WorkspacePrepareOptions,
+} from '../src/review/workspace.js'
 
 type PublishReviewInput = Parameters<ReviewPlatform['publishReview']>[0]
 
@@ -65,18 +72,66 @@ function createPRInfoStub(): PRInfoObject {
   }
 }
 
+function createReviewResult(
+  overrides: Partial<ReviewResult> = {},
+): ReviewResult {
+  return {
+    summary: 'No issues.',
+    score: 9,
+    decision: 'approve',
+    findings: [],
+    ...overrides,
+  }
+}
+
+function createPriorReviewInfo(
+  overrides: Partial<PriorSuccessfulReviewInfo> = {},
+): PriorSuccessfulReviewInfo {
+  return {
+    hasPriorSuccessfulReview: false,
+    latestReviewedSha: null,
+    latestReviewState: null,
+    ...overrides,
+  }
+}
+
 function createGitHubPlatform(overrides: Partial<ReviewPlatform> = {}) {
+  const seenMarkers = new Set<string>()
+  const hasPublishedResult = vi.fn((_context: unknown, marker: string) =>
+    Promise.resolve(seenMarkers.has(marker)),
+  )
+  const publishReview = vi.fn((input: PublishReviewInput) => {
+    const marker = input.body.split('\n')[0]
+    if (marker) {
+      seenMarkers.add(marker)
+    }
+
+    return Promise.resolve()
+  })
+  const publishFailureComment = vi.fn((_context: unknown, body: string) => {
+    const marker = body.split('\n')[0]
+    if (marker) {
+      seenMarkers.add(marker)
+    }
+
+    return Promise.resolve()
+  })
+
   const baseMocks = {
     getPullRequestDiscussionMarkdown: vi
       .fn()
       .mockResolvedValue('# Pull Request Discussion Context\n\n- None\n'),
+    getPriorSuccessfulReview: vi
+      .fn()
+      .mockResolvedValue(createPriorReviewInfo()),
     getPRInfo: vi.fn().mockResolvedValue(createPRInfoStub()),
-    hasPublishedResult: vi.fn().mockResolvedValue(false),
-    publishFailureComment: vi.fn().mockResolvedValue(undefined),
-    publishReview: vi.fn().mockResolvedValue(undefined),
+    hasPublishedResult,
+    publishFailureComment,
+    publishReview,
     getFileContent: vi.fn(),
     listPullRequestFiles: vi.fn(),
   }
+
   const mocks = {
     ...baseMocks,
     ...overrides,
@@ -89,7 +144,10 @@ function createGitHubPlatform(overrides: Partial<ReviewPlatform> = {}) {
 }
 
 function createWorkspaceManager(
-  overrides: Partial<ReviewWorkspaceManager> = {},
+  overrides: {
+    availableRevisionRefs?: string[]
+    prepareWorkspace?: ReviewWorkspaceManager['prepareWorkspace']
+  } = {},
 ): {
   manager: ReviewWorkspaceManager
   mocks: {
@@ -102,6 +160,11 @@ function createWorkspaceManager(
     overrides.prepareWorkspace ??
       (() =>
         Promise.resolve({
+          availableRevisionRefs: overrides.availableRevisionRefs ?? [
+            'refs/codex-review/base',
+            'refs/codex-review/head',
+            'refs/codex-review/previous',
+          ],
           cleanup,
           diff: [
             'diff --git a/src/app.ts b/src/app.ts',
@@ -122,268 +185,207 @@ function createWorkspaceManager(
           workingDirectory: '/tmp/codex-review-workspace',
         })),
   )
-  const mocks: {
-    cleanup: ReturnType<typeof vi.fn>
-    prepareWorkspace: ReturnType<typeof vi.fn>
-  } = {
-    cleanup,
-    prepareWorkspace: prepareWorkspaceMock,
-  }
+
   const manager: ReviewWorkspaceManager = {
-    prepareWorkspace(context, prInfo, loggerOverride) {
-      return prepareWorkspaceMock(context, prInfo, loggerOverride)
+    prepareWorkspace(
+      context,
+      prInfo,
+      loggerOverride,
+      options?: WorkspacePrepareOptions,
+    ) {
+      return prepareWorkspaceMock(context, prInfo, loggerOverride, options)
     },
   }
 
   return {
     manager,
-    mocks,
+    mocks: {
+      cleanup,
+      prepareWorkspace: prepareWorkspaceMock,
+    },
   }
 }
 
-function createSuccessfulCodexReview(): CodexRunner['reviewChained'] {
-  return vi.fn(() =>
-    Promise.resolve({
-      ok: true,
-      result: {
-        summary: 'Found one issue.',
-        score: 6,
-        decision: 'request_changes',
-        findings: [
-          {
-            severity: 'major',
-            path: 'src/app.ts',
-            line: 1,
-            title: 'Console statement committed',
-            comment: 'Use the structured logger instead.',
-          },
-        ],
-      },
-    }),
-  ) as CodexRunner['reviewChained']
-}
-
-function makeCodexRunner(
-  reviewChained: CodexRunner['reviewChained'],
-): CodexRunner {
+function makeCodexRunner(input?: {
+  review?: CodexRunner['review']
+  reviewTwoPhase?: CodexRunner['reviewTwoPhase']
+}): CodexRunner {
   return {
-    review: vi.fn(),
-    reviewChained,
+    review:
+      input?.review ??
+      (vi.fn().mockResolvedValue({
+        ok: true,
+        result: createReviewResult(),
+      }) as CodexRunner['review']),
+    reviewTwoPhase:
+      input?.reviewTwoPhase ??
+      (vi.fn().mockResolvedValue({
+        ok: true,
+        result: createReviewResult(),
+      }) as CodexRunner['reviewTwoPhase']),
   }
-}
-
-function createDeferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (error?: unknown) => void
-  const promise = new Promise<T>((innerResolve, innerReject) => {
-    resolve = innerResolve
-    reject = innerReject
-  })
-
-  return { promise, reject, resolve }
 }
 
 describe('ReviewService', () => {
-  it('publishes a review for a valid Codex result', async () => {
-    const github = createGitHubPlatform()
-    const workspace = createWorkspaceManager()
-    const codex = makeCodexRunner(createSuccessfulCodexReview())
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
-    expect(github.mocks.publishReview).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'REQUEST_CHANGES',
-      }),
-    )
-    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
-    expect(workspace.mocks.cleanup).toHaveBeenCalledTimes(1)
-  })
-
-  it('emits lifecycle logs for a successful review run', async () => {
-    const github = createGitHubPlatform()
-    const workspace = createWorkspaceManager()
-    const codexRunner = vi.fn().mockResolvedValue({
-      ok: true,
-      result: {
-        summary: 'No issues.',
-        score: 9,
-        decision: 'approve',
-        findings: [],
-      },
-    }) as CodexRunner['reviewChained']
-    const codex: CodexRunner = makeCodexRunner(codexRunner)
-    const logger = createLoggerStub()
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      logger,
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'review_requested',
-        deliveryId: 'delivery-123',
-        event: 'webhook.routed',
-        headSha: 'abc123',
-        owner: 'acme',
-        pullNumber: 42,
-        repo: 'repo',
-        status: 'trigger_review',
-      }),
-      'Webhook routed',
-    )
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deliveryId: 'delivery-123',
-        event: 'review.started',
-        runKey: 'acme/repo#42@abc123',
-        status: 'started',
-      }),
-      'Review started',
-    )
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deliveryId: 'delivery-123',
-        event: 'review.completed',
-        runKey: 'acme/repo#42@abc123',
-        status: 'completed',
-      }),
-      'Review completed',
-    )
-  })
-
-  it('publishes a neutral failure comment when Codex fails', async () => {
-    const github = createGitHubPlatform()
-    const workspace = createWorkspaceManager()
-    const codex: CodexRunner = makeCodexRunner(
-      vi.fn().mockResolvedValue({
-        ok: false,
-        reason: 'Codex returned a non-zero exit code.',
-      }) as CodexRunner['reviewChained'],
-    )
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    expect(github.mocks.publishReview).not.toHaveBeenCalled()
-    expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(1)
-  })
-
-  it('skips duplicate head SHA results', async () => {
+  it('uses two-phase codex flow for initial review requests', async () => {
     const github = createGitHubPlatform({
-      hasPublishedResult: vi.fn().mockResolvedValue(true),
-    })
-    const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn()
-    const codex = makeCodexRunner(reviewChained)
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled()
-    expect(reviewChained).not.toHaveBeenCalled()
-  })
-
-  it('continues review when idempotency check returns not found', async () => {
-    const github = createGitHubPlatform({
-      hasPublishedResult: vi.fn().mockRejectedValue({
-        status: 404,
-        message: 'Not Found',
-      }),
-    })
-    const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn().mockResolvedValue({
-      ok: true,
-      result: {
-        summary: 'No actionable issues.',
-        score: 9,
-        decision: 'approve',
-        findings: [],
-      },
-    }) as CodexRunner['reviewChained']
-    const codex: CodexRunner = makeCodexRunner(reviewChained)
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    expect(workspace.mocks.prepareWorkspace).toHaveBeenCalledTimes(1)
-    expect(reviewChained).toHaveBeenCalledTimes(1)
-    expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
-    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
-  })
-
-  it('publishes neutral failure comment when idempotency check is forbidden', async () => {
-    const github = createGitHubPlatform({
-      hasPublishedResult: vi.fn().mockRejectedValue({
-        status: 403,
-        message: 'Forbidden',
-      }),
-    })
-    const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn()
-    const codex = makeCodexRunner(reviewChained as CodexRunner['reviewChained'])
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled()
-    expect(reviewChained).not.toHaveBeenCalled()
-    expect(github.mocks.publishReview).not.toHaveBeenCalled()
-    expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not throw when fallback failure comment publishing also fails', async () => {
-    const github = createGitHubPlatform({
-      hasPublishedResult: vi.fn().mockRejectedValue({
-        status: 403,
-        message: 'Forbidden',
-      }),
-      publishFailureComment: vi
+      getPriorSuccessfulReview: vi
         .fn()
-        .mockRejectedValue(new Error('comment publish failed')),
+        .mockResolvedValue(
+          createPriorReviewInfo({ hasPriorSuccessfulReview: false }),
+        ),
     })
     const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn()
-    const codex: CodexRunner = makeCodexRunner(
-      reviewChained as CodexRunner['reviewChained'],
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const reviewTwoPhase = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+      reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
+    })
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
     )
+
+    await service.handlePullRequestEvent(createPullRequestEvent())
+
+    expect(reviewTwoPhase).toHaveBeenCalledTimes(1)
+    expect(review).not.toHaveBeenCalled()
+    expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses fast single-phase re-review flow after a prior successful bot review', async () => {
+    const github = createGitHubPlatform({
+      getPriorSuccessfulReview: vi.fn().mockResolvedValue(
+        createPriorReviewInfo({
+          hasPriorSuccessfulReview: true,
+          latestReviewedSha: 'sha-prev',
+          latestReviewState: 'CHANGES_REQUESTED',
+        }),
+      ),
+    })
+    const workspace = createWorkspaceManager()
+
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const reviewTwoPhase = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+      reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
+    })
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
+    )
+
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-re-review' }),
+    )
+
+    expect(reviewTwoPhase).not.toHaveBeenCalled()
+    expect(review).toHaveBeenCalledTimes(1)
+
+    const reviewInput = review.mock.calls[0]?.[0] as {
+      prompt: string
+    }
+    expect(reviewInput.prompt).toContain(
+      'Delta range: refs/codex-review/previous..refs/codex-review/head',
+    )
+  })
+
+  it('falls back to full PR range when previous reviewed SHA is unavailable in workspace', async () => {
+    const github = createGitHubPlatform({
+      getPriorSuccessfulReview: vi.fn().mockResolvedValue(
+        createPriorReviewInfo({
+          hasPriorSuccessfulReview: true,
+          latestReviewedSha: 'sha-prev',
+          latestReviewState: 'APPROVED',
+        }),
+      ),
+    })
+    const workspace = createWorkspaceManager({
+      availableRevisionRefs: [
+        'refs/codex-review/base',
+        'refs/codex-review/head',
+      ],
+    })
+
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+    })
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
+    )
+
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-fallback' }),
+    )
+
+    const reviewInput = review.mock.calls[0]?.[0] as {
+      prompt: string
+    }
+    expect(reviewInput.prompt).toContain(
+      'Delta range: refs/codex-review/base..refs/codex-review/head',
+    )
+    expect(reviewInput.prompt).toContain(
+      'Delta fallback applied: previous_review_sha_not_fetchable',
+    )
+  })
+
+  it('ignores synchronize events entirely', async () => {
+    const github = createGitHubPlatform()
+    const workspace = createWorkspaceManager()
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const reviewTwoPhase = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+      reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
+    })
     const logger = createLoggerStub()
 
     const service = new ReviewService(
@@ -394,235 +396,73 @@ describe('ReviewService', () => {
       'review-bot',
     )
 
-    await expect(
-      service.handlePullRequestEvent(createPullRequestEvent()),
-    ).resolves.toBeUndefined()
-
-    expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(1)
-    expect(logger.error).toHaveBeenCalledTimes(2)
-  })
-
-  it('passes the temporary workspace directory and unified diff to Codex', async () => {
-    const github = createGitHubPlatform()
-    const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn().mockResolvedValue({
-      ok: true,
-      result: {
-        summary: 'No actionable issues.',
-        score: 9,
-        decision: 'approve',
-        findings: [],
-      },
-    })
-    const codex: CodexRunner = makeCodexRunner(reviewChained)
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    const reviewInput = reviewChained.mock.calls[0]?.[0] as {
-      phase1Prompt: string
-      phase2Prompt: (phase1Output: string) => string
-      phase3Prompt: (phase2Output: string) => string
-      workingDirectory: string
-    }
-    expect(reviewChained).toHaveBeenCalledTimes(1)
-    expect(reviewInput.workingDirectory).toBe('/tmp/codex-review-workspace')
-    expect(reviewInput.phase1Prompt).toContain('pr-info.yaml')
-    const phase2Prompt = reviewInput.phase2Prompt('phase1-summary')
-    const phase3Prompt = reviewInput.phase3Prompt('phase2-overview')
-    expect(phase2Prompt).toContain(
-      "git diff --name-status refs/codex-review/base refs/codex-review/head -- 'src/app.ts'",
-    )
-    expect(phase2Prompt).toContain(
-      "git diff --unified=5 refs/codex-review/base refs/codex-review/head -- 'src/app.ts' | head -c 80000",
-    )
-    expect(phase3Prompt).toContain(
-      "git diff --name-status refs/codex-review/base refs/codex-review/head -- 'src/app.ts'",
-    )
-    expect(phase3Prompt).toContain(
-      "git diff --unified=5 refs/codex-review/base refs/codex-review/head -- 'src/app.ts' | head -c 80000",
-    )
-    expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
-    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
-  })
-
-  it('processes review requests in global FIFO order across repositories', async () => {
-    const github = createGitHubPlatform()
-    const workspace = createWorkspaceManager()
-    const firstReviewDeferred = createDeferred<{
-      ok: true
-      result: {
-        decision: 'approve'
-        findings: []
-        score: number
-        summary: string
-      }
-    }>()
-    const reviewChained = vi
-      .fn<CodexRunner['reviewChained']>()
-      .mockImplementationOnce(() => firstReviewDeferred.promise)
-      .mockResolvedValue({
-        ok: true,
-        result: {
-          summary: 'No issues.',
-          score: 9,
-          decision: 'approve',
-          findings: [],
-        },
-      })
-    const codex: CodexRunner = makeCodexRunner(reviewChained)
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-
-    const repoOneRequest = service.handlePullRequestEvent(
-      createPullRequestEvent(),
-    )
-    await Promise.resolve()
-    const repoTwoRequest = service.handlePullRequestEvent(
-      createPullRequestEvent({
-        deliveryId: 'delivery-456',
-        headSha: 'def999',
-        owner: 'acme-2',
-        pullNumber: 7,
-        repo: 'repo-2',
-      }),
-    )
-
-    firstReviewDeferred.resolve({
-      ok: true,
-      result: {
-        summary: 'No issues.',
-        score: 9,
-        decision: 'approve',
-        findings: [],
-      },
-    })
-
-    await Promise.all([repoOneRequest, repoTwoRequest])
-
-    expect(reviewChained).toHaveBeenCalledTimes(2)
-    const publishedHeads = vi
-      .mocked(github.mocks.publishReview)
-      .mock.calls.map((call) => (call[0] as PublishReviewInput).context.headSha)
-    expect(publishedHeads).toEqual(['abc123', 'def999'])
-  })
-
-  it('cancels in-flight Codex run on synchronize and processes next queued request first', async () => {
-    const github = createGitHubPlatform()
-    const workspace = createWorkspaceManager()
-    const firstRunStarted = createDeferred<void>()
-    const firstRunCancelled = createDeferred<void>()
-    const reviewChained = vi
-      .fn<CodexRunner['reviewChained']>()
-      .mockImplementationOnce((input) => {
-        firstRunStarted.resolve()
-        return new Promise((resolve) => {
-          if (input.abortSignal?.aborted) {
-            firstRunCancelled.resolve()
-            resolve({
-              ok: false,
-              reason: 'Codex review canceled.',
-              cancelled: true,
-            })
-            return
-          }
-
-          input.abortSignal?.addEventListener(
-            'abort',
-            () => {
-              firstRunCancelled.resolve()
-              resolve({
-                ok: false,
-                reason: 'Codex review canceled.',
-                cancelled: true,
-              })
-            },
-            { once: true },
-          )
-        })
-      })
-      .mockResolvedValue({
-        ok: true,
-        result: {
-          summary: 'No issues.',
-          score: 9,
-          decision: 'approve',
-          findings: [],
-        },
-      })
-    const codex: CodexRunner = makeCodexRunner(reviewChained)
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-
-    const repoOneOriginal = service.handlePullRequestEvent(
-      createPullRequestEvent(),
-    )
-    await firstRunStarted.promise
-
-    const repoTwoRequest = service.handlePullRequestEvent(
-      createPullRequestEvent({
-        deliveryId: 'delivery-456',
-        headSha: 'sha-repo-2',
-        owner: 'acme-2',
-        pullNumber: 7,
-        repo: 'repo-2',
-      }),
-    )
-
-    const repoOneUpdated = service.handlePullRequestEvent(
+    await service.handlePullRequestEvent(
       createPullRequestEvent({
         action: 'synchronize',
         actionKind: 'synchronize',
-        afterSha: 'sha-repo-1-new',
-        beforeSha: 'abc123',
-        botStillRequested: true,
-        headSha: 'sha-repo-1-new',
         requestedReviewerLogin: null,
-        requestedReviewerLogins: ['review-bot'],
       }),
     )
 
-    await firstRunCancelled.promise
-    await Promise.all([repoOneOriginal, repoTwoRequest, repoOneUpdated])
-
-    const publishedHeads = vi
-      .mocked(github.mocks.publishReview)
-      .mock.calls.map((call) => (call[0] as PublishReviewInput).context.headSha)
-    expect(publishedHeads).toEqual(['sha-repo-2', 'sha-repo-1-new'])
-    expect(publishedHeads).not.toContain('abc123')
+    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled()
+    expect(reviewTwoPhase).not.toHaveBeenCalled()
+    expect(review).not.toHaveBeenCalled()
+    expect(github.mocks.publishReview).not.toHaveBeenCalled()
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'webhook.routed',
+        reason: 'synchronize_ignored',
+        status: 'ignored',
+      }),
+      'Webhook routed',
+    )
   })
 
-  it('skips synchronize commits after a PR is approved when approved lock is enabled', async () => {
-    const github = createGitHubPlatform()
+  it('ignores subsequent requests after approve with approved reason', async () => {
+    const getPriorSuccessfulReview = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createPriorReviewInfo({
+          hasPriorSuccessfulReview: false,
+          latestReviewedSha: null,
+          latestReviewState: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createPriorReviewInfo({
+          hasPriorSuccessfulReview: false,
+          latestReviewedSha: null,
+          latestReviewState: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createPriorReviewInfo({
+          hasPriorSuccessfulReview: true,
+          latestReviewedSha: 'abc123',
+          latestReviewState: 'APPROVED',
+        }),
+      )
+
+    const github = createGitHubPlatform({
+      getPriorSuccessfulReview,
+    })
     const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn().mockResolvedValue({
+
+    const reviewTwoPhase = vi.fn().mockResolvedValue({
       ok: true,
-      result: {
-        summary: 'No issues.',
-        score: 9,
-        decision: 'approve',
-        findings: [],
-      },
-    }) as CodexRunner['reviewChained']
-    const codex: CodexRunner = makeCodexRunner(reviewChained)
+      result: createReviewResult({ decision: 'approve' }),
+    })
+
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult({ decision: 'approve' }),
+    })
+
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+      reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
+    })
+
     const logger = createLoggerStub()
 
     const service = new ReviewService(
@@ -636,326 +476,55 @@ describe('ReviewService', () => {
       },
     )
 
-    await service.handlePullRequestEvent(createPullRequestEvent())
     await service.handlePullRequestEvent(
-      createPullRequestEvent({
-        action: 'synchronize',
-        actionKind: 'synchronize',
-        afterSha: 'sha-after-approve',
-        beforeSha: 'abc123',
-        botStillRequested: true,
-        headSha: 'sha-after-approve',
-        requestedReviewerLogin: null,
-        requestedReviewerLogins: ['review-bot'],
-      }),
+      createPullRequestEvent({ deliveryId: 'delivery-1' }),
+    )
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-2' }),
     )
 
-    expect(reviewChained).toHaveBeenCalledTimes(1)
+    expect(reviewTwoPhase).toHaveBeenCalledTimes(1)
+    expect(review).not.toHaveBeenCalled()
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
-        event: 'review.queue_ignored',
-        reason: 'approved_locked',
+        event: 'webhook.routed',
+        reason: 'approved_before',
         status: 'ignored',
       }),
-      'Review queued event ignored',
+      'Webhook routed',
     )
   })
 
-  it('publishes APPROVE with comments when findings are non-blocking', async () => {
-    const github = createGitHubPlatform()
-    const workspace = createWorkspaceManager()
-    const codex: CodexRunner = makeCodexRunner(
-      vi.fn().mockResolvedValue({
-        ok: true,
-        result: {
-          summary: 'Minor follow-up recommended.',
-          score: 8,
-          decision: 'approve',
-          findings: [
-            {
-              severity: 'minor',
-              path: 'src/app.ts',
-              line: 1,
-              title: 'Small cleanup',
-              comment: 'Prefer the shared logger helper here.',
-            },
-          ],
-        },
-      }) as CodexRunner['reviewChained'],
+  it('keeps classifying as initial review when first run failed to publish successful review', async () => {
+    const getPriorSuccessfulReview = vi.fn().mockResolvedValue(
+      createPriorReviewInfo(),
     )
 
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    const publishReviewMock = vi.mocked(github.mocks.publishReview)
-    expect(publishReviewMock).toHaveBeenCalledTimes(1)
-    const publishInput = publishReviewMock.mock.calls[0]?.[0] as {
-      comments: Array<{ body: string }>
-      event: string
-    }
-    expect(publishInput.event).toBe('APPROVE')
-    expect(publishInput.comments).toHaveLength(1)
-    expect(publishInput.comments[0]?.body).toContain('Small cleanup')
-    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
-  })
-
-  it('publishes a neutral failure comment when decision mismatches finding severity', async () => {
-    const github = createGitHubPlatform()
-    const workspace = createWorkspaceManager()
-    const codex: CodexRunner = makeCodexRunner(
-      vi.fn().mockResolvedValue({
-        ok: true,
-        result: {
-          summary: 'Mismatch response.',
-          score: 8,
-          decision: 'approve',
-          findings: [
-            {
-              severity: 'major',
-              path: 'src/app.ts',
-              line: 1,
-              title: 'Missing validation',
-              comment: 'This should block the review.',
-            },
-          ],
-        },
-      }) as CodexRunner['reviewChained'],
-    )
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    expect(github.mocks.publishReview).not.toHaveBeenCalled()
-    expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(1)
-    expect(github.mocks.publishFailureComment).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.stringContaining(
-        'Expected "request_changes" but received "approve".',
-      ),
-    )
-  })
-
-  it('retries with a body-only review when GitHub rejects inline comment locations', async () => {
-    const publishReviewMock = vi
+    const reviewTwoPhase = vi
       .fn()
-      .mockRejectedValueOnce({
-        status: 422,
-        message: 'Review comments is invalid.',
-        errors: [
-          {
-            resource: 'PullRequestReviewComment',
-            field: 'line',
-            code: 'invalid',
-          },
-        ],
+      .mockResolvedValueOnce({
+        ok: false,
+        reason: 'Codex returned a non-zero exit code.',
       })
-      .mockResolvedValueOnce(undefined)
-    const github = createGitHubPlatform({
-      publishReview: publishReviewMock,
-    })
-    const workspace = createWorkspaceManager()
-    const codex = makeCodexRunner(createSuccessfulCodexReview())
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      createLoggerStub(),
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(createPullRequestEvent())
-
-    const firstPublishInput = publishReviewMock.mock.calls[0]?.[0] as {
-      body: string
-      comments: unknown[]
-    }
-    const secondPublishInput = publishReviewMock.mock.calls[1]?.[0] as {
-      body: string
-      comments: unknown[]
-    }
-
-    expect(publishReviewMock).toHaveBeenCalledTimes(2)
-    expect(firstPublishInput.comments).toHaveLength(1)
-    expect(secondPublishInput.comments).toEqual([])
-    expect(secondPublishInput.body).toContain('### Additional findings')
-    expect(secondPublishInput.body).toContain('Console statement committed')
-    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
-  })
-
-  it('ignores review requests for a different reviewer', async () => {
-    const github = createGitHubPlatform({})
-    const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn()
-    const codex: CodexRunner = makeCodexRunner(
-      reviewChained as CodexRunner['reviewChained'],
-    )
-    const logger = createLoggerStub()
-
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      logger,
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(
-      createPullRequestEvent({
-        requestedReviewerLogin: 'someone-else',
-        requestedReviewerLogins: ['someone-else'],
-      }),
-    )
-
-    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled()
-    expect(reviewChained).not.toHaveBeenCalled()
-    expect(github.mocks.publishReview).not.toHaveBeenCalled()
-    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'webhook.routed',
-        reason: 'reviewer_mismatch',
-        status: 'ignored',
-      }),
-      'Webhook routed',
-    )
-  })
-
-  it('reviews synchronize events when the bot remains requested', async () => {
-    const github = createGitHubPlatform({})
-    const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn().mockResolvedValue({
+      .mockResolvedValueOnce({
+        ok: true,
+        result: createReviewResult(),
+      })
+    const review = vi.fn().mockResolvedValue({
       ok: true,
-      result: {
-        summary: 'No actionable issues.',
-        score: 9,
-        decision: 'approve',
-        findings: [],
-      },
-    }) as CodexRunner['reviewChained']
-    const codex: CodexRunner = makeCodexRunner(reviewChained)
-    const logger = createLoggerStub()
+      result: createReviewResult(),
+    })
 
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      logger,
-      'review-bot',
-    )
-    await service.handlePullRequestEvent(
-      createPullRequestEvent({
-        action: 'synchronize',
-        actionKind: 'synchronize',
-        afterSha: 'abc123',
-        beforeSha: '000000',
-        botStillRequested: true,
-        requestedReviewerLogin: null,
-      }),
-    )
-
-    expect(workspace.mocks.prepareWorkspace).toHaveBeenCalledTimes(1)
-    expect(reviewChained).toHaveBeenCalledTimes(1)
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        botStillRequested: true,
-        event: 'webhook.routed',
-        status: 'trigger_review',
-      }),
-      'Webhook routed',
-    )
-  })
-
-  it('cancels an in-flight review after review_request_removed arrives', async () => {
-    const hasPublishedResultDeferred = createDeferred<boolean>()
     const github = createGitHubPlatform({
-      hasPublishedResult: vi
-        .fn()
-        .mockImplementation(() => hasPublishedResultDeferred.promise),
-      publishReview: vi.fn(),
+      getPriorSuccessfulReview,
     })
     const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn()
-    const codex: CodexRunner = makeCodexRunner(
-      reviewChained as CodexRunner['reviewChained'],
-    )
-    const logger = createLoggerStub()
-    const service = new ReviewService(
-      github.platform,
-      codex,
-      workspace.manager,
-      logger,
-      'review-bot',
-    )
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+      reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
+    })
 
-    const runPromise = service.handlePullRequestEvent(createPullRequestEvent())
-    await Promise.resolve()
-
-    await service.handlePullRequestEvent(
-      createPullRequestEvent({
-        action: 'review_request_removed',
-        actionKind: 'review_request_removed',
-        requestedReviewerLogins: [],
-      }),
-    )
-
-    hasPublishedResultDeferred.resolve(false)
-    await runPromise
-
-    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled()
-    expect(reviewChained).not.toHaveBeenCalled()
-    expect(github.mocks.publishReview).not.toHaveBeenCalled()
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'review.cancel_requested',
-        reason: 'cancel_requested',
-        runKey: 'acme/repo#42@abc123',
-        status: 'cancel_requested',
-      }),
-      'Review cancel requested',
-    )
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: 'review.canceled',
-        reason: 'cancel_requested',
-        runKey: 'acme/repo#42@abc123',
-        status: 'canceled',
-      }),
-      'Review canceled',
-    )
-  })
-
-  it('does not cancel an in-flight review when a delayed review_requested arrives for an older SHA', async () => {
-    const publishReviewMock = vi.fn().mockResolvedValue(undefined)
-    const github = createGitHubPlatform({ publishReview: publishReviewMock })
-    const workspace = createWorkspaceManager()
-    const runStarted = createDeferred<void>()
-    const reviewChained = vi
-      .fn<CodexRunner['reviewChained']>()
-      .mockImplementationOnce(() => {
-        runStarted.resolve()
-        return Promise.resolve({
-          ok: true,
-          result: {
-            summary: 'No issues.',
-            score: 9,
-            decision: 'approve',
-            findings: [],
-          },
-        })
-      })
-    const codex = makeCodexRunner(reviewChained)
     const service = new ReviewService(
       github.platform,
       codex,
@@ -964,36 +533,44 @@ describe('ReviewService', () => {
       'review-bot',
     )
 
-    // Start the in-flight review for headSha 'abc123'
-    const currentRun = service.handlePullRequestEvent(createPullRequestEvent())
-    await runStarted.promise
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-fail-1' }),
+    )
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-fail-2' }),
+    )
 
-    // Delayed/out-of-order review_requested arrives for an older SHA while abc123 is in-flight.
-    // With the fix, latestHead must NOT be overwritten to 'old-sha-111' and the
-    // in-flight run must NOT be cancelled.
-    await Promise.all([
-      currentRun,
-      service.handlePullRequestEvent(
-        createPullRequestEvent({ headSha: 'old-sha-111' }),
-      ),
-    ])
-
-    // The in-flight 'abc123' review should have published successfully
-    expect(publishReviewMock).toHaveBeenCalledTimes(1)
-    expect(
-      (publishReviewMock.mock.calls[0]?.[0] as PublishReviewInput).context
-        .headSha,
-    ).toBe('abc123')
-    expect(github.mocks.publishFailureComment).not.toHaveBeenCalled()
+    expect(reviewTwoPhase).toHaveBeenCalledTimes(2)
+    expect(review).not.toHaveBeenCalled()
+    expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(1)
+    expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
   })
 
-  it('ignores unsupported pull_request actions', async () => {
-    const github = createGitHubPlatform({})
-    const workspace = createWorkspaceManager()
-    const reviewChained = vi.fn()
-    const codex: CodexRunner = makeCodexRunner(
-      reviewChained as CodexRunner['reviewChained'],
+  it('ignores trigger review after restart when prior successful review is approved', async () => {
+    const getPriorSuccessfulReview = vi.fn().mockResolvedValue(
+      createPriorReviewInfo({
+        hasPriorSuccessfulReview: true,
+        latestReviewedSha: 'abc123',
+        latestReviewState: 'APPROVED',
+      }),
     )
+
+    const github = createGitHubPlatform({
+      getPriorSuccessfulReview,
+    })
+    const workspace = createWorkspaceManager()
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const reviewTwoPhase = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+      reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
+    })
     const logger = createLoggerStub()
 
     const service = new ReviewService(
@@ -1002,23 +579,77 @@ describe('ReviewService', () => {
       workspace.manager,
       logger,
       'review-bot',
+      {
+        approvedLockEnabled: true,
+      },
     )
+
     await service.handlePullRequestEvent(
-      createPullRequestEvent({
-        action: 'opened',
-        actionKind: 'other_pull_request_action',
-      }),
+      createPullRequestEvent({ deliveryId: 'delivery-restart-approved-1' }),
     )
 
     expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled()
-    expect(reviewChained).not.toHaveBeenCalled()
+    expect(reviewTwoPhase).not.toHaveBeenCalled()
+    expect(review).not.toHaveBeenCalled()
+    expect(github.mocks.publishReview).not.toHaveBeenCalled()
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'webhook.routed',
-        reason: 'unsupported_action',
+        reason: 'approved_before',
         status: 'ignored',
       }),
       'Webhook routed',
     )
+  })
+
+  it('allows manual re-request on same head SHA using run-token marker dedupe when approved lock is disabled', async () => {
+    const getPriorSuccessfulReview = vi.fn().mockResolvedValue(
+      createPriorReviewInfo({
+        hasPriorSuccessfulReview: false,
+      }),
+    )
+
+    const github = createGitHubPlatform({
+      getPriorSuccessfulReview,
+    })
+    const workspace = createWorkspaceManager()
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const reviewTwoPhase = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+      reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
+    })
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
+    )
+
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-same-sha-1' }),
+    )
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-same-sha-2' }),
+    )
+
+    expect(github.mocks.hasPublishedResult).toHaveBeenCalledTimes(2)
+    const firstMarker = vi.mocked(github.mocks.hasPublishedResult).mock
+      .calls[0]?.[1]
+    const secondMarker = vi.mocked(github.mocks.hasPublishedResult).mock
+      .calls[1]?.[1]
+    expect(firstMarker).not.toEqual(secondMarker)
+    expect(github.mocks.publishReview).toHaveBeenCalledTimes(2)
   })
 })

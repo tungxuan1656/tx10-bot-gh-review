@@ -1,7 +1,4 @@
-import type { ReviewableFile } from './types.js'
-
 const maxPhase1OutputCharacters = 3_000
-const maxPhase2OutputCharacters = 4_000
 const maxPhaseDiffInputCharacters = 80_000
 const baseRefName = 'refs/codex-review/base'
 const headRefName = 'refs/codex-review/head'
@@ -50,43 +47,17 @@ export function buildPhase1Prompt(input: {
   ].join('\n')
 }
 
-/** Phase 2: Ask Codex to analyse the diff in context of the phase-1 summary. Returns free-form markdown. */
-export function buildPhase2Prompt(input: {
-  phase1Summary: string
-  reviewablePaths: string[]
-}): string {
-  const pathspec = formatReviewablePathspec(input.reviewablePaths)
-
-  return [
-    'You are a senior engineer reviewing a pull request.',
-    'You have already summarised the PR metadata.',
-    `Now inspect the repository state directly using git between ${baseRefName} and ${headRefName}.`,
-    'Only inspect supported reviewable files passed in the pathspec.',
-    '',
-    'Run these commands in the workspace:',
-    `1. git diff --name-status ${baseRefName} ${headRefName} -- ${pathspec}`,
-    `2. git diff --unified=5 ${baseRefName} ${headRefName} -- ${pathspec} | head -c ${maxPhaseDiffInputCharacters}`,
-    '',
-    'Using both the summary and the git diff output, describe:',
-    '- The exact scope of changes (which modules, layers, APIs are touched)',
-    '- The intent behind the changes (what problem they solve)',
-    '- Any notable added, removed, or modified features or behaviours',
-    '',
-    'Output markdown only, no JSON. Do not include a code fence. Keep it under 20 sentences.',
-    '',
-    '## PR Summary (from phase 1)',
-    truncate(input.phase1Summary, maxPhase1OutputCharacters),
-  ].join('\n')
-}
-
-/** Phase 3: Deep review using code, diff, skills, and conversation history. Returns JSON. */
-export function buildPhase3Prompt(input: {
+/**
+ * Initial review phase 2: deep review in JSON.
+ * Requires reading the bundled code-review skill and references first.
+ */
+export function buildInitialReviewPhase2Prompt(input: {
   owner: string
   repo: string
   pullNumber: number
   title: string
   headSha: string
-  changesOverview: string
+  phase1Summary: string
   discussionFilePath: string
   reviewablePaths: string[]
 }): string {
@@ -94,15 +65,21 @@ export function buildPhase3Prompt(input: {
 
   return [
     'You are reviewing a GitHub pull request.',
-    'Use the `code-review` skill available in the workspace and follow it strictly for a rigorous review.',
+    'You already have a metadata summary from phase 1.',
+    'Before reviewing, you MUST read and follow these files in the workspace:',
+    '- .agents/skills/code-review/SKILL.md',
+    '- .agents/skills/code-review/references/review-playbook.md',
+    '- .agents/skills/code-review/references/rule-catalog.md',
+    '- .agents/skills/code-review/references/severity-confidence-rubric.md',
+    '- .agents/skills/code-review/references/output-contract.md',
+    `Before writing findings, read ${input.discussionFilePath} from the repository root and use it as historical context.`,
+    'Treat resolved conversations and maintainer explanations as prior context, and avoid repeating issues that are already resolved.',
     'Return JSON only.',
     'Do not include markdown fences or any prose outside the JSON object.',
     'Focus on concrete bugs, correctness issues, security issues, and missing validation.',
     'Ignore purely stylistic suggestions.',
     'Only report findings when you are confident and can point to a specific file path and line number visible in the diff context you inspect.',
     'Do not speculate. If evidence is insufficient, omit the finding.',
-    `Before writing findings, read ${input.discussionFilePath} from the repository root and use it as historical context.`,
-    'Treat resolved conversations and maintainer explanations as prior context, and avoid repeating issues that are already resolved.',
     '',
     'Repository inspection instructions:',
     `- First run: git diff --name-status ${baseRefName} ${headRefName} -- ${pathspec}`,
@@ -131,15 +108,15 @@ export function buildPhase3Prompt(input: {
     `Title: ${input.title}`,
     `Head SHA: ${input.headSha}`,
     '',
-    '## Changes Overview (from diff analysis)',
-    truncate(input.changesOverview, maxPhase2OutputCharacters),
+    '## PR Summary (from phase 1)',
+    truncate(input.phase1Summary, maxPhase1OutputCharacters),
     '',
     'Required JSON shape:',
     JSON.stringify(
       {
         summary: 'string',
         changesOverview:
-          'string (copy/refine the overview above, or use an empty string if no extra overview is needed)',
+          'string (optional; include only when it adds value, otherwise omit this key)',
         score: 0,
         decision: 'approve',
         findings: [
@@ -158,29 +135,85 @@ export function buildPhase3Prompt(input: {
   ].join('\n')
 }
 
-/**
- * Backwards-compatible single-prompt builder.
- * Used by tests and any callers that have not yet migrated to the chained flow.
- */
-export function buildReviewPrompt(input: {
+/** Re-review fast path: focus on commits since previous reviewed SHA and unresolved prior findings. */
+export function buildReReviewPrompt(input: {
   owner: string
   repo: string
   pullNumber: number
   title: string
   headSha: string
-  diff: string
-  files: ReviewableFile[]
-  discussionContextMarkdown: string
   discussionFilePath: string
+  reviewablePaths: string[]
+  deltaFromRef: string
+  deltaToRef: string
+  deltaFromSha: string | null
+  fallbackReason: string | null
 }): string {
-  return buildPhase3Prompt({
-    owner: input.owner,
-    repo: input.repo,
-    pullNumber: input.pullNumber,
-    title: input.title,
-    headSha: input.headSha,
-    discussionFilePath: input.discussionFilePath,
-    changesOverview: '',
-    reviewablePaths: input.files.map((file) => file.path),
-  })
+  const pathspec = formatReviewablePathspec(input.reviewablePaths)
+
+  return [
+    'You are performing a fast re-review for a GitHub pull request after a new manual review request.',
+    'Return JSON only.',
+    'Do not include markdown fences or prose outside the JSON object.',
+    '',
+    'Primary objective:',
+    '- Focus on changes since the last successful bot-reviewed commit.',
+    '- Verify whether previously raised blocking issues appear fixed based on new changes and discussion context.',
+    '- Do not re-review the entire PR from scratch unless fallback is explicitly required.',
+    '',
+    `Before writing findings, read ${input.discussionFilePath} from the repository root.`,
+    'Use it to identify prior bot concerns, maintainer replies, and unresolved threads.',
+    '',
+    'Repository inspection instructions:',
+    `- Delta range: ${input.deltaFromRef}..${input.deltaToRef}`,
+    ...(input.deltaFromSha
+      ? [`- Previous reviewed SHA: ${input.deltaFromSha}`]
+      : ['- Previous reviewed SHA: unavailable']),
+    ...(input.fallbackReason
+      ? [`- Delta fallback applied: ${input.fallbackReason}`]
+      : ['- Delta fallback applied: no']),
+    `- First run: git diff --name-status ${input.deltaFromRef} ${input.deltaToRef} -- ${pathspec}`,
+    `- Then inspect patch: git diff --unified=5 ${input.deltaFromRef} ${input.deltaToRef} -- ${pathspec} | head -c ${maxPhaseDiffInputCharacters}`,
+    `- If needed for confidence: git diff --unified=20 ${input.deltaFromRef} ${input.deltaToRef} -- <path>`,
+    `- If still needed: git diff -W ${input.deltaFromRef} ${input.deltaToRef} -- <path>`,
+    `- For current file content: git show ${headRefName}:<path>`,
+    '',
+    'Finding policy:',
+    '- Focus on regressions, still-unfixed blocking issues, and new correctness/security defects introduced by delta commits.',
+    '- Ignore purely stylistic suggestions.',
+    '- Omit findings without concrete diff-based evidence.',
+    '',
+    'Decision guidance:',
+    '- Decision must be exactly "request_changes" or "approve".',
+    '- Use "request_changes" when at least one finding is "critical" or "major".',
+    '- Use "approve" when findings are only "minor"/"improvement" or there are no findings.',
+    '',
+    `Repository: ${input.owner}/${input.repo}`,
+    `Pull Request: #${input.pullNumber}`,
+    `Title: ${input.title}`,
+    `Head SHA: ${input.headSha}`,
+    '',
+    'Required JSON shape:',
+    JSON.stringify(
+      {
+        summary: 'string',
+        changesOverview:
+          'string (optional; include only when it adds value, otherwise omit this key)',
+        score: 0,
+        decision: 'approve',
+        findings: [
+          {
+            severity: 'minor',
+            path: 'src/example.ts',
+            line: 10,
+            title: 'Short issue title',
+            comment: 'Concrete explanation and fix guidance',
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  ].join('\n')
 }
+

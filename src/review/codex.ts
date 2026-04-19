@@ -60,7 +60,7 @@ const codexOutputJsonSchema = {
       },
     },
   },
-  required: ['summary', 'changesOverview', 'score', 'decision', 'findings'],
+  required: ['summary', 'score', 'decision', 'findings'],
   additionalProperties: false,
 } as const
 
@@ -116,11 +116,10 @@ export type CodexRunner = {
     logger?: AppLogger,
   ): Promise<CodexReviewOutcome>
 
-  reviewChained(
+  reviewTwoPhase(
     input: {
       phase1Prompt: string
       phase2Prompt: (phase1Output: string) => string
-      phase3Prompt: (phase2Output: string) => string
       workingDirectory: string
       abortSignal?: AbortSignal
     },
@@ -503,11 +502,10 @@ export function createCodexRunner(input: {
       }
     },
 
-    async reviewChained(
+    async reviewTwoPhase(
       chainedInput: {
         phase1Prompt: string
         phase2Prompt: (phase1Output: string) => string
-        phase3Prompt: (phase2Output: string) => string
         workingDirectory: string
         abortSignal?: AbortSignal
       },
@@ -523,17 +521,16 @@ export function createCodexRunner(input: {
       logger.debug(
         {
           component: 'codex',
-          event: 'codex.chained_started',
+          event: 'codex.two_phase_started',
           status: 'started',
           timeoutMs,
           model: input.model,
           workingDirectory: chainedInput.workingDirectory,
         },
-        'Codex chained review started',
+        'Codex two-phase review started',
       )
 
       try {
-        // Phase 1: summarise PR from pr-info.yaml
         const phase1Result = await runCodexPhase({
           prompt: chainedInput.phase1Prompt,
           workingDirectory: chainedInput.workingDirectory,
@@ -547,12 +544,11 @@ export function createCodexRunner(input: {
           return phase1Result
         }
 
-        // Phase 2: analyse diff & changes overview
         const phase2Result = await runCodexPhase({
           prompt: chainedInput.phase2Prompt(phase1Result.output),
           workingDirectory: chainedInput.workingDirectory,
           abortSignal: chainedInput.abortSignal,
-          validateJson: false,
+          validateJson: true,
           phaseLabel: 'phase2',
           logger,
         })
@@ -561,21 +557,7 @@ export function createCodexRunner(input: {
           return phase2Result
         }
 
-        // Phase 3: deep review → JSON output
-        const phase3Result = await runCodexPhase({
-          prompt: chainedInput.phase3Prompt(phase2Result.output),
-          workingDirectory: chainedInput.workingDirectory,
-          abortSignal: chainedInput.abortSignal,
-          validateJson: true,
-          phaseLabel: 'phase3',
-          logger,
-        })
-
-        if (!phase3Result.ok) {
-          return phase3Result
-        }
-
-        const parsed: unknown = JSON.parse(phase3Result.output)
+        const parsed: unknown = JSON.parse(phase2Result.output)
         const result = reviewResultSchema.safeParse(parsed)
 
         if (!result.success) {
@@ -585,12 +567,12 @@ export function createCodexRunner(input: {
               durationMs: Date.now() - startedAt,
               event: 'codex.failed',
               issues: result.error.issues,
-              outputChars: phase3Result.output.length,
+              outputChars: phase2Result.output.length,
               reason: 'invalid_json',
               status: 'failed',
               workingDirectory: chainedInput.workingDirectory,
             },
-            'Codex chained review failed',
+            'Codex two-phase review failed',
           )
           return {
             ok: false,
@@ -609,7 +591,7 @@ export function createCodexRunner(input: {
             status: 'completed',
             workingDirectory: chainedInput.workingDirectory,
           },
-          'Codex chained review completed',
+          'Codex two-phase review completed',
         )
 
         return { ok: true, result: result.data }
@@ -622,7 +604,7 @@ export function createCodexRunner(input: {
             reason: 'process_error',
             status: 'failed',
           },
-          'Codex chained review failed',
+          'Codex two-phase review failed',
         )
         return {
           ok: false,
