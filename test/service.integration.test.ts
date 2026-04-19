@@ -255,6 +255,9 @@ describe('ReviewService', () => {
       workspace.manager,
       createLoggerStub(),
       'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
     )
 
     await service.handlePullRequestEvent(createPullRequestEvent())
@@ -296,6 +299,9 @@ describe('ReviewService', () => {
       workspace.manager,
       createLoggerStub(),
       'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
     )
 
     await service.handlePullRequestEvent(
@@ -345,6 +351,9 @@ describe('ReviewService', () => {
       workspace.manager,
       createLoggerStub(),
       'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
     )
 
     await service.handlePullRequestEvent(
@@ -421,6 +430,13 @@ describe('ReviewService', () => {
       )
       .mockResolvedValueOnce(
         createPriorReviewInfo({
+          hasPriorSuccessfulReview: false,
+          latestReviewedSha: null,
+          latestReviewState: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createPriorReviewInfo({
           hasPriorSuccessfulReview: true,
           latestReviewedSha: 'abc123',
           latestReviewState: 'APPROVED',
@@ -481,10 +497,9 @@ describe('ReviewService', () => {
   })
 
   it('keeps classifying as initial review when first run failed to publish successful review', async () => {
-    const getPriorSuccessfulReview = vi
-      .fn()
-      .mockResolvedValueOnce(createPriorReviewInfo())
-      .mockResolvedValueOnce(createPriorReviewInfo())
+    const getPriorSuccessfulReview = vi.fn().mockResolvedValue(
+      createPriorReviewInfo(),
+    )
 
     const reviewTwoPhase = vi
       .fn()
@@ -529,6 +544,62 @@ describe('ReviewService', () => {
     expect(review).not.toHaveBeenCalled()
     expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(1)
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores trigger review after restart when prior successful review is approved', async () => {
+    const getPriorSuccessfulReview = vi.fn().mockResolvedValue(
+      createPriorReviewInfo({
+        hasPriorSuccessfulReview: true,
+        latestReviewedSha: 'abc123',
+        latestReviewState: 'APPROVED',
+      }),
+    )
+
+    const github = createGitHubPlatform({
+      getPriorSuccessfulReview,
+    })
+    const workspace = createWorkspaceManager()
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const reviewTwoPhase = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult(),
+    })
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+      reviewTwoPhase: reviewTwoPhase as unknown as CodexRunner['reviewTwoPhase'],
+    })
+    const logger = createLoggerStub()
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      logger,
+      'review-bot',
+      {
+        approvedLockEnabled: true,
+      },
+    )
+
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-restart-approved-1' }),
+    )
+
+    expect(workspace.mocks.prepareWorkspace).not.toHaveBeenCalled()
+    expect(reviewTwoPhase).not.toHaveBeenCalled()
+    expect(review).not.toHaveBeenCalled()
+    expect(github.mocks.publishReview).not.toHaveBeenCalled()
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'webhook.routed',
+        reason: 'approved_before',
+        status: 'ignored',
+      }),
+      'Webhook routed',
+    )
   })
 
   it('allows manual re-request on same head SHA using run-token marker dedupe when approved lock is disabled', async () => {

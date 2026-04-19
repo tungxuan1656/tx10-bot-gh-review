@@ -34,7 +34,6 @@ REQUESTED_SKILLS=(
   nodejs-keccak256
 
   tdd-workflow
-  security-review
   benchmark
   git-workflow
   deployment-patterns
@@ -50,12 +49,7 @@ REQUESTED_SKILLS=(
 
 # Agents relevant to frontend + backend + common workflows for React, React Native, and Node.js.
 REQUESTED_AGENTS=(
-  architect
   build-error-resolver
-  code-architect
-  code-explorer
-  code-reviewer
-  code-simplifier
   comment-analyzer
   database-reviewer
   doc-updater
@@ -190,9 +184,6 @@ core_skills=(
   lint-and-validate
   verification-before-completion
   concise-planning
-  code-review-checklist
-  requesting-code-review
-  receiving-code-review
   react-native-architecture
   react-component-performance
   i18n-localization

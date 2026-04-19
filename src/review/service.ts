@@ -316,15 +316,17 @@ export class ReviewService {
     event: NormalizedPullRequestEvent,
   ): Promise<void> {
     const deliveryLogger = this.createDeliveryLogger(event)
-    const pullRequestKey = buildPullRequestKey(toPullRequestContext(event))
+    const context = toPullRequestContext(event)
+    const pullRequestKey = buildPullRequestKey(context)
+    const routedEventByAction = this.routePullRequestEvent(event)
     const routedEvent =
-      this.approvedLockEnabled &&
-      this.approvedLockedPullRequests.has(pullRequestKey)
+      routedEventByAction.status === 'trigger_review' &&
+      (await this.isApprovedLocked(context, pullRequestKey, deliveryLogger))
         ? ({
             status: 'ignored',
             reason: approvedIgnoredReason,
           } as const)
-        : this.routePullRequestEvent(event)
+        : routedEventByAction
 
     deliveryLogger.info(
       {
@@ -350,6 +352,43 @@ export class ReviewService {
     }
 
     await this.enqueueReview(event, deliveryLogger)
+  }
+
+  private async isApprovedLocked(
+    context: PullRequestContext,
+    pullRequestKey: string,
+    deliveryLogger: AppLogger,
+  ): Promise<boolean> {
+    if (!this.approvedLockEnabled) {
+      return false
+    }
+
+    if (this.approvedLockedPullRequests.has(pullRequestKey)) {
+      return true
+    }
+
+    try {
+      const priorSuccessfulReview = await this.github.getPriorSuccessfulReview(
+        context,
+      )
+
+      if (priorSuccessfulReview.latestReviewState !== 'APPROVED') {
+        return false
+      }
+
+      this.approvedLockedPullRequests.add(pullRequestKey)
+      return true
+    } catch (error) {
+      deliveryLogger.warn(
+        {
+          error,
+          event: 'review.approved_lock_lookup_failed',
+          status: 'failed',
+        },
+        'Approved lock lookup failed',
+      )
+      return false
+    }
   }
 
   private createDeliveryLogger(event: NormalizedPullRequestEvent): AppLogger {
