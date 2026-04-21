@@ -1,4 +1,4 @@
-import { determineReviewDecision, toReviewEvent } from './decision.js'
+import { determineReviewDecision } from './decision.js'
 import {
   buildInitialReviewPhase2Prompt,
   buildPhase1Prompt,
@@ -6,15 +6,13 @@ import {
 } from './prompt.js'
 import {
   buildFailureComment,
-  buildReviewBody,
   buildReviewMarker,
 } from './summary.js'
 import { createChildLogger } from '../logger.js'
 import type { AppLogger } from '../logger.js'
 import type { CodexRunner } from './codex.js'
-import type { ReviewPlatform, ReviewReaction } from './github-platform.js'
+import type { ReviewPlatform } from './github-platform.js'
 import type { NormalizedPullRequestEvent } from './webhook-event.js'
-import type { PullRequestContext } from './types.js'
 import type { ReviewWorkspaceManager } from './workspace.js'
 import type { DiscussionCacheOptions } from './discussion-cache.js'
 import { persistDiscussionContext, reviewCommentsFileName } from './discussion-cache.js'
@@ -23,14 +21,12 @@ import {
   buildPullRequestKey,
   buildRunKey,
   getErrorStatusCode,
-  isInvalidInlineReviewCommentError,
-  normalizeOptionalText,
   resolveReReviewDelta,
-  separateInlineAndOverflowFindings,
   toPullRequestContext,
   toReviewMode,
 } from './service-helpers.js'
 import type { ActiveRun, ActiveRunRef, ReviewQueueManager } from './review-queue.js'
+import { publishSuccessfulReview, setPullRequestReaction } from './review-publishing.js'
 
 const previousReviewedRefName = 'refs/codex-review/previous'
 
@@ -47,41 +43,7 @@ type ReviewExecutionInput = {
   deliveryLogger: AppLogger
 }
 
-async function setPullRequestReaction(input: {
-  context: PullRequestContext
-  deliveryLogger: AppLogger
-  github: ReviewPlatform
-  reaction: ReviewReaction
-  reason: string
-}): Promise<void> {
-  try {
-    await input.github.setPullRequestReaction(input.context, input.reaction)
-    input.deliveryLogger.info(
-      {
-        event: 'review.reaction_updated',
-        reaction: input.reaction,
-        reason: input.reason,
-        status: 'completed',
-      },
-      'Review reaction updated',
-    )
-  } catch (error) {
-    input.deliveryLogger.warn(
-      {
-        error,
-        event: 'review.reaction_failed',
-        reaction: input.reaction,
-        reason: input.reason,
-        status: 'failed',
-      },
-      'Review reaction update failed',
-    )
-  }
-}
-
-export async function reviewPullRequest(
-  input: ReviewExecutionInput,
-): Promise<void> {
+export async function reviewPullRequest(input: ReviewExecutionInput): Promise<void> {
   const context = toPullRequestContext(input.event)
   const pullRequestKey = buildPullRequestKey(context)
   const runKey = buildRunKey(context)
@@ -478,139 +440,19 @@ export async function reviewPullRequest(
         return
       }
 
-      const reviewEvent = toReviewEvent(outcome.result.decision)
-      const { comments, overflowFindings } = separateInlineAndOverflowFindings(
-        outcome.result.findings,
-        workspace.reviewableFiles,
-      )
-
-      runLogger.info(
-        {
-          event: 'review.publish_started',
-          inlineCommentCount: comments.length,
-          overflowFindingCount: overflowFindings.length,
-          reviewEvent,
-          status: 'started',
-        },
-        'Review publish started',
-      )
-
-      if (
-        input.queueManager.shouldStopForCancellation(
-          runLogger,
-          run,
-          'before_publish',
-        )
-      ) {
-        return
-      }
-
-      const normalizedChangesOverview = normalizeOptionalText(
-        outcome.result.changesOverview,
-      )
-
-      const body = buildReviewBody({
-        headSha: context.headSha,
-        runToken: input.event.deliveryId,
-        score: outcome.result.score,
-        summary: outcome.result.summary,
-        ...(normalizedChangesOverview
-          ? { changesOverview: normalizedChangesOverview }
-          : {}),
-        event: reviewEvent,
-        overflowFindings,
-      })
-      const fallbackBody = buildReviewBody({
-        headSha: context.headSha,
-        runToken: input.event.deliveryId,
-        score: outcome.result.score,
-        summary: outcome.result.summary,
-        ...(normalizedChangesOverview
-          ? { changesOverview: normalizedChangesOverview }
-          : {}),
-        event: reviewEvent,
-        overflowFindings: outcome.result.findings,
-      })
-
-      try {
-        await input.github.publishReview({
-          context,
-          body,
-          event: reviewEvent,
-          comments,
-        })
-        publishedReview = true
-        runLogger.info(
-          {
-            event: 'review.published',
-            inlineCommentCount: comments.length,
-            reviewEvent,
-            status: 'published',
-          },
-          'Review published',
-        )
-      } catch (error) {
-        if (!comments.length || !isInvalidInlineReviewCommentError(error)) {
-          throw error
-        }
-
-        runLogger.warn(
-          {
-            commentCount: comments.length,
-            error,
-            event: 'review.publish_fallback',
-            reason: 'invalid_inline_location',
-            status: 'retrying',
-          },
-          'Review publish fallback',
-        )
-
-        if (
-          input.queueManager.shouldStopForCancellation(
-            runLogger,
-            run,
-            'before_publish_fallback',
-          )
-        ) {
-          return
-        }
-
-        await input.github.publishReview({
-          context,
-          body: fallbackBody,
-          event: reviewEvent,
-          comments: [],
-        })
-        publishedReview = true
-        runLogger.info(
-          {
-            event: 'review.publish_fallback',
-            fallbackMode: true,
-            reviewEvent,
-            status: 'published',
-          },
-          'Review published',
-        )
-      }
-
-      await setPullRequestReaction({
+      publishedReview = await publishSuccessfulReview({
+        approvedLockEnabled: input.approvedLockEnabled,
+        approvedLockedPullRequests: input.approvedLockedPullRequests,
         context,
-        deliveryLogger: runLogger,
+        deliveryId: input.event.deliveryId,
         github: input.github,
-        reaction: reviewEvent === 'APPROVE' ? 'hooray' : 'confused',
-        reason: 'review_published',
+        outcome,
+        queueManager: input.queueManager,
+        run,
+        runLogger,
+        reviewableFiles: workspace.reviewableFiles,
       })
 
-      if (reviewEvent === 'APPROVE' && input.approvedLockEnabled) {
-        input.approvedLockedPullRequests.add(pullRequestKey)
-        runLogger.info(
-          {
-            event: 'review.approved_locked',
-            status: 'completed',
-          },
-          'Review approved lock applied',
-        )
-      }
     } finally {
       await workspace.cleanup()
     }

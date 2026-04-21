@@ -1,13 +1,14 @@
 import { createChildLogger } from '../logger.js'
 import type { AppLogger } from '../logger.js'
 import type { CodexRunner } from './codex.js'
-import type { ReviewPlatform, ReviewReaction } from './github-platform.js'
+import type { ReviewPlatform } from './github-platform.js'
 import type { NormalizedPullRequestEvent } from './webhook-event.js'
 import type { PullRequestContext } from './types.js'
 import type { ReviewWorkspaceManager } from './workspace.js'
 import { ReviewQueueManager, type ActiveRunRef } from './review-queue.js'
 import { buildPullRequestKey, routePullRequestEvent, toPullRequestContext } from './service-helpers.js'
 import { reviewPullRequest } from './review-execution.js'
+import { setPullRequestReaction } from './review-publishing.js'
 
 type ReviewServiceOptions = {
   approvedLockEnabled?: boolean
@@ -94,12 +95,13 @@ export class ReviewService {
         routedEvent.reason !== approvedIgnoredReason &&
         !this.queueManager.hasPendingReviewForPullRequest(pullRequestKey)
       ) {
-        await this.setPullRequestReaction(
+        await setPullRequestReaction({
           context,
-          'laugh',
           deliveryLogger,
-          'ignored_event',
-        )
+          github: this.github,
+          reaction: 'laugh',
+          reason: 'ignored_event',
+        })
       }
 
       return
@@ -165,34 +167,4 @@ export class ReviewService {
     })
   }
 
-  private async setPullRequestReaction(
-    context: PullRequestContext,
-    reaction: ReviewReaction,
-    deliveryLogger: AppLogger,
-    reason: string,
-  ): Promise<void> {
-    try {
-      await this.github.setPullRequestReaction(context, reaction)
-      deliveryLogger.info(
-        {
-          event: 'review.reaction_updated',
-          reaction,
-          reason,
-          status: 'completed',
-        },
-        'Review reaction updated',
-      )
-    } catch (error) {
-      deliveryLogger.warn(
-        {
-          error,
-          event: 'review.reaction_failed',
-          reaction,
-          reason,
-          status: 'failed',
-        },
-        'Review reaction update failed',
-      )
-    }
-  }
 }
