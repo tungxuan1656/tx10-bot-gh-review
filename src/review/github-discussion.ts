@@ -1,5 +1,6 @@
 import type { Octokit } from '@octokit/rest'
 
+import { renderPullRequestDiscussionMarkdown } from './github-discussion-markdown.js'
 import type { PullRequestContext } from './types.js'
 
 export type DiscussionAuthor = {
@@ -36,91 +37,6 @@ export type InstallationOctokit = Pick<Octokit, 'paginate' | 'graphql' | 'rest'>
 
 function toAuthorLogin(author: DiscussionAuthor): string {
   return author?.login ?? 'unknown'
-}
-
-function sanitizeDiscussionBody(body: string | null | undefined): string {
-  const normalized = (body ?? '').replace(/\r\n/g, '\n').trim()
-
-  if (!normalized) {
-    return '(empty comment)'
-  }
-
-  const maxBodyCharacters = 2_000
-  if (normalized.length <= maxBodyCharacters) {
-    return normalized
-  }
-
-  return `${normalized.slice(0, maxBodyCharacters)}\n...[truncated]`
-}
-
-function toDiscussionMarkdown(input: {
-  context: PullRequestContext
-  payload: PullRequestDiscussionPayload
-}): string {
-  const issueCommentLines =
-    input.payload.issueComments.length === 0
-      ? ['- None']
-      : input.payload.issueComments.map((comment) =>
-          [
-            `- [${comment.createdAt}] @${comment.authorLogin}`,
-            sanitizeDiscussionBody(comment.body),
-          ].join('\n'),
-        )
-
-  const reviewLines =
-    input.payload.reviews.length === 0
-      ? ['- None']
-      : input.payload.reviews.map((review) =>
-          [
-            `- [${review.submittedAt}] @${review.authorLogin} (${review.state})`,
-            sanitizeDiscussionBody(review.body),
-          ].join('\n'),
-        )
-
-  const reviewThreadLines =
-    input.payload.reviewThreads.length === 0
-      ? ['- None']
-      : input.payload.reviewThreads.map((thread, threadIndex) => {
-          const status = thread.isResolved
-            ? `resolved by @${thread.resolvedByLogin ?? 'unknown'}`
-            : 'unresolved'
-          const comments =
-            thread.comments.length === 0
-              ? ['  - No comments in thread']
-              : thread.comments.map((comment) => {
-                  const location = comment.path
-                    ? `${comment.path}${comment.line ? `:${comment.line}` : ''}`
-                    : 'general'
-                  return [
-                    `  - [${comment.createdAt}] @${comment.authorLogin} (${location})`,
-                    `    ${sanitizeDiscussionBody(comment.body).replace(/\n/g, '\n    ')}`,
-                  ].join('\n')
-                })
-
-          return [`- Thread ${threadIndex + 1} (${status})`, ...comments].join(
-            '\n',
-          )
-        })
-
-  return [
-    '# Pull Request Discussion Context',
-    `Repository: ${input.context.owner}/${input.context.repo}`,
-    `Pull Request: #${input.context.pullNumber}`,
-    `Head SHA: ${input.context.headSha}`,
-    `Source: ${input.payload.source}`,
-    `Generated At: ${new Date().toISOString()}`,
-    '',
-    '## Issue Comments',
-    ...issueCommentLines,
-    '',
-    '## Reviews',
-    ...reviewLines,
-    '',
-    '## Review Threads',
-    ...reviewThreadLines,
-    '',
-    'Use this context to avoid repeating already resolved findings and to incorporate maintainer explanations.',
-  ].join('\n')
 }
 
 async function fetchDiscussionWithGraphQl(
@@ -322,8 +238,9 @@ export async function getPullRequestDiscussionMarkdown(
   const graphQlPayload = await fetchDiscussionWithGraphQl(octokit, context)
   const payload = graphQlPayload ?? (await fetchDiscussionWithRest(octokit, context))
 
-  return toDiscussionMarkdown({
+  return renderPullRequestDiscussionMarkdown({
     context,
+    generatedAt: new Date().toISOString(),
     payload,
   })
 }
