@@ -3,7 +3,8 @@ import { buildPullRequestKey, isInvalidInlineReviewCommentError, normalizeOption
 import { buildReviewBody } from './summary.js'
 import type { AppLogger } from '../logger.js'
 import type { ActiveRun, ReviewQueueManager } from './review-queue.js'
-import type { ReviewPlatform, ReviewReaction } from './github-platform.js'
+import type { ReviewPlatform } from './github-platform.js'
+import type { ReviewReaction } from './github-reactions.js'
 import type { CodexReviewSuccess, PullRequestContext, ReviewableFile } from './types.js'
 
 export async function setPullRequestReaction(input: {
