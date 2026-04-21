@@ -20,6 +20,11 @@ import type {
   ReviewWorkspaceManager,
 } from './workspace.js'
 import {
+  ReviewQueueManager,
+  type ActiveRun,
+  type ActiveRunRef,
+} from './review-queue.js'
+import {
   persistDiscussionContext,
   reviewCommentsFileName,
 } from './discussion-cache.js'
@@ -37,24 +42,6 @@ import {
   toReviewMode,
 } from './service-helpers.js'
 
-type QueueCancelReason = 'cancel_requested'
-
-type QueueRequest = {
-  enqueuedAt: number
-  completion: Promise<void>
-  event: NormalizedPullRequestEvent
-  resolveCompletion: () => void
-}
-
-type ActiveRun = {
-  abortController: AbortController
-  cancellationLogged: boolean
-  cancellationReason: QueueCancelReason | null
-  context: PullRequestContext
-  pullRequestKey: string
-  runKey: string
-}
-
 type ReviewServiceOptions = {
   approvedLockEnabled?: boolean
   discussionCacheDirectory?: string
@@ -64,32 +51,14 @@ type ReviewServiceOptions = {
 const approvedIgnoredReason = 'approved_before'
 const previousReviewedRefName = 'refs/codex-review/previous'
 
-function createCompletion(): {
-  completion: Promise<void>
-  resolveCompletion: () => void
-} {
-  let resolveCompletion!: () => void
-
-  const completion = new Promise<void>((resolve) => {
-    resolveCompletion = resolve
-  })
-
-  return {
-    completion,
-    resolveCompletion,
-  }
-}
-
 export class ReviewService {
-  private readonly queue: QueueRequest[] = []
-  private readonly queuedByPullRequestKey = new Map<string, QueueRequest>()
   private readonly approvedLockedPullRequests = new Set<string>()
 
   private readonly approvedLockEnabled: boolean
   private readonly discussionCacheOptions: ReviewServiceOptions
 
-  private activeRun: ActiveRun | null = null
-  private queueDrainInProgress = false
+  private readonly activeRunRef: ActiveRunRef = { current: null }
+  private readonly queueManager: ReviewQueueManager
 
   constructor(
     private readonly github: ReviewPlatform,
@@ -101,6 +70,11 @@ export class ReviewService {
   ) {
     this.approvedLockEnabled = options.approvedLockEnabled ?? true
     this.discussionCacheOptions = options
+    this.queueManager = new ReviewQueueManager(
+      this.activeRunRef,
+      this.reviewPullRequest.bind(this),
+      this.createDeliveryLogger.bind(this),
+    )
   }
 
   async handlePullRequestEvent(
@@ -140,7 +114,7 @@ export class ReviewService {
     if (routedEvent.status === 'ignored') {
       if (
         routedEvent.reason !== approvedIgnoredReason &&
-        !this.hasPendingReviewForPullRequest(pullRequestKey)
+        !this.queueManager.hasPendingReviewForPullRequest(pullRequestKey)
       ) {
         await this.setPullRequestReaction(
           context,
@@ -154,11 +128,11 @@ export class ReviewService {
     }
 
     if (routedEvent.status === 'cancel_requested') {
-      this.cancelQueuedAndActivePullRequest(event, deliveryLogger)
+      this.queueManager.cancelQueuedAndActivePullRequest(event, deliveryLogger)
       return
     }
 
-    await this.enqueueReview(event, deliveryLogger)
+    await this.queueManager.enqueueReview(event, deliveryLogger)
   }
 
   private async isApprovedLocked(
@@ -213,138 +187,6 @@ export class ReviewService {
     })
   }
 
-  private async enqueueReview(
-    event: NormalizedPullRequestEvent,
-    deliveryLogger: AppLogger,
-  ): Promise<void> {
-    const context = toPullRequestContext(event)
-    const pullRequestKey = buildPullRequestKey(context)
-
-    const inFlightRun = this.activeRun
-    if (
-      inFlightRun &&
-      inFlightRun.pullRequestKey === pullRequestKey &&
-      inFlightRun.context.headSha === context.headSha
-    ) {
-      deliveryLogger.info(
-        {
-          event: 'review.queue_ignored',
-          reason: 'duplicate_inflight',
-          runKey: inFlightRun.runKey,
-          status: 'ignored',
-        },
-        'Review queued event ignored',
-      )
-      return
-    }
-
-    const existingQueued = this.queuedByPullRequestKey.get(pullRequestKey)
-    if (existingQueued?.event.headSha === context.headSha) {
-      deliveryLogger.info(
-        {
-          event: 'review.queue_ignored',
-          reason: 'duplicate_queued',
-          status: 'ignored',
-        },
-        'Review queued event ignored',
-      )
-      return
-    }
-
-    if (existingQueued) {
-      this.removeQueuedRequest(pullRequestKey)
-    }
-
-    const request: QueueRequest = {
-      ...createCompletion(),
-      enqueuedAt: Date.now(),
-      event,
-    }
-
-    this.queue.push(request)
-    this.queuedByPullRequestKey.set(pullRequestKey, request)
-
-    deliveryLogger.info(
-      {
-        event: 'review.enqueued',
-        queueLength: this.queue.length,
-        reason: 'trigger_review',
-        routedReason: event.actionKind,
-        status: 'queued',
-      },
-      'Review enqueued',
-    )
-
-    this.drainQueue()
-    await request.completion
-  }
-
-  private cancelQueuedAndActivePullRequest(
-    event: NormalizedPullRequestEvent,
-    deliveryLogger: AppLogger,
-  ): void {
-    const context = toPullRequestContext(event)
-    const pullRequestKey = buildPullRequestKey(context)
-    const removedQueuedRequest = this.removeQueuedRequest(pullRequestKey)
-
-    const inFlightRun = this.activeRun
-    const canceledActiveRun =
-      inFlightRun?.pullRequestKey === pullRequestKey
-        ? this.requestRunCancellation(
-            inFlightRun,
-            'cancel_requested',
-            deliveryLogger,
-          )
-        : false
-
-    if (!removedQueuedRequest && !canceledActiveRun) {
-      deliveryLogger.info(
-        {
-          event: 'review.cancel_missed',
-          reason: 'cancel_requested',
-          status: 'cancel_missed',
-        },
-        'Review cancel missed',
-      )
-      return
-    }
-
-    deliveryLogger.info(
-      {
-        canceledActiveRun,
-        event: 'review.cancel_requested',
-        queueLength: this.queue.length,
-        removedQueuedRequest,
-        status: 'cancel_requested',
-      },
-      'Review cancel requested',
-    )
-  }
-
-  private removeQueuedRequest(pullRequestKey: string): boolean {
-    const request = this.queuedByPullRequestKey.get(pullRequestKey)
-    if (!request) {
-      return false
-    }
-
-    this.queuedByPullRequestKey.delete(pullRequestKey)
-    const requestIndex = this.queue.indexOf(request)
-    if (requestIndex >= 0) {
-      this.queue.splice(requestIndex, 1)
-    }
-
-    request.resolveCompletion()
-
-    return true
-  }
-
-  private hasPendingReviewForPullRequest(pullRequestKey: string): boolean {
-    return (
-      this.activeRun?.pullRequestKey === pullRequestKey ||
-      this.queuedByPullRequestKey.has(pullRequestKey)
-    )
-  }
-
   private async setPullRequestReaction(
     context: PullRequestContext,
     reaction: ReviewReaction,
@@ -376,93 +218,6 @@ export class ReviewService {
     }
   }
 
-  private requestRunCancellation(
-    run: ActiveRun,
-    reason: QueueCancelReason,
-    deliveryLogger: AppLogger,
-  ): boolean {
-    if (run.abortController.signal.aborted) {
-      return false
-    }
-
-    run.cancellationReason = reason
-    run.abortController.abort()
-    deliveryLogger.info(
-      {
-        event: 'review.cancel_requested',
-        reason,
-        runKey: run.runKey,
-        status: 'cancel_requested',
-      },
-      'Review cancel requested',
-    )
-    return true
-  }
-
-  private shouldStopForCancellation(
-    runLogger: AppLogger,
-    run: ActiveRun,
-    stage: string,
-  ): boolean {
-    if (!run.abortController.signal.aborted) {
-      return false
-    }
-
-    if (!run.cancellationLogged) {
-      run.cancellationLogged = true
-      runLogger.info(
-        {
-          event: 'review.canceled',
-          reason: run.cancellationReason ?? 'cancel_requested',
-          runKey: run.runKey,
-          stage,
-          status: 'canceled',
-        },
-        'Review canceled',
-      )
-    }
-
-    return true
-  }
-
-  private drainQueue(): void {
-    if (this.queueDrainInProgress) {
-      return
-    }
-
-    this.queueDrainInProgress = true
-    void this.runQueueDrain()
-  }
-
-  private async runQueueDrain(): Promise<void> {
-    try {
-      while (this.queue.length > 0) {
-        const queuedRequest = this.queue.shift()
-        if (!queuedRequest) {
-          continue
-        }
-
-        const context = toPullRequestContext(queuedRequest.event)
-        const pullRequestKey = buildPullRequestKey(context)
-
-        if (this.queuedByPullRequestKey.get(pullRequestKey) === queuedRequest) {
-          this.queuedByPullRequestKey.delete(pullRequestKey)
-        }
-
-        await this.reviewPullRequest(
-          queuedRequest.event,
-          this.createDeliveryLogger(queuedRequest.event),
-        )
-        queuedRequest.resolveCompletion()
-      }
-    } finally {
-      this.queueDrainInProgress = false
-      if (this.queue.length > 0) {
-        this.drainQueue()
-      }
-    }
-  }
-
   private async reviewPullRequest(
     event: NormalizedPullRequestEvent,
     deliveryLogger: AppLogger,
@@ -485,12 +240,12 @@ export class ReviewService {
     }
     let publishedReview = false
 
-    this.activeRun = run
+    this.activeRunRef.current = run
 
     runLogger.info(
       {
         event: 'review.started',
-        queueLength: this.queue.length,
+        queueLength: this.queueManager.queueLength,
         status: 'started',
       },
       'Review started',
@@ -544,7 +299,13 @@ export class ReviewService {
         return
       }
 
-      if (this.shouldStopForCancellation(runLogger, run, 'after_idempotency')) {
+      if (
+        this.queueManager.shouldStopForCancellation(
+          runLogger,
+          run,
+          'after_idempotency',
+        )
+      ) {
         return
       }
 
@@ -579,7 +340,13 @@ export class ReviewService {
         'PR info fetched',
       )
 
-      if (this.shouldStopForCancellation(runLogger, run, 'after_pr_info')) {
+      if (
+        this.queueManager.shouldStopForCancellation(
+          runLogger,
+          run,
+          'after_pr_info',
+        )
+      ) {
         return
       }
 
@@ -620,7 +387,7 @@ export class ReviewService {
         )
 
         if (
-          this.shouldStopForCancellation(
+          this.queueManager.shouldStopForCancellation(
             runLogger,
             run,
             'after_workspace_prepare',
@@ -666,7 +433,7 @@ export class ReviewService {
         })
 
         if (
-          this.shouldStopForCancellation(
+          this.queueManager.shouldStopForCancellation(
             runLogger,
             run,
             'after_discussion_context',
@@ -774,7 +541,11 @@ export class ReviewService {
         if (!outcome.ok) {
           if (
             outcome.cancelled ||
-            this.shouldStopForCancellation(runLogger, run, 'after_codex')
+            this.queueManager.shouldStopForCancellation(
+              runLogger,
+              run,
+              'after_codex',
+            )
           ) {
             return
           }
@@ -810,7 +581,13 @@ export class ReviewService {
           'Review Codex step completed',
         )
 
-        if (this.shouldStopForCancellation(runLogger, run, 'after_codex')) {
+        if (
+          this.queueManager.shouldStopForCancellation(
+            runLogger,
+            run,
+            'after_codex',
+          )
+        ) {
           return
         }
 
@@ -862,7 +639,13 @@ export class ReviewService {
           'Review publish started',
         )
 
-        if (this.shouldStopForCancellation(runLogger, run, 'before_publish')) {
+        if (
+          this.queueManager.shouldStopForCancellation(
+            runLogger,
+            run,
+            'before_publish',
+          )
+        ) {
           return
         }
 
@@ -927,7 +710,7 @@ export class ReviewService {
           )
 
           if (
-            this.shouldStopForCancellation(
+            this.queueManager.shouldStopForCancellation(
               runLogger,
               run,
               'before_publish_fallback',
@@ -963,7 +746,6 @@ export class ReviewService {
 
         if (reviewEvent === 'APPROVE' && this.approvedLockEnabled) {
           this.approvedLockedPullRequests.add(pullRequestKey)
-          this.removeQueuedRequest(pullRequestKey)
           runLogger.info(
             {
               event: 'review.approved_locked',
@@ -976,7 +758,7 @@ export class ReviewService {
         await workspace.cleanup()
       }
     } catch (error) {
-      if (this.shouldStopForCancellation(runLogger, run, 'on_error')) {
+      if (this.queueManager.shouldStopForCancellation(runLogger, run, 'on_error')) {
         return
       }
 
@@ -1012,8 +794,8 @@ export class ReviewService {
         )
       }
     } finally {
-      if (this.activeRun?.runKey === runKey) {
-        this.activeRun = null
+      if (this.activeRunRef.current?.runKey === runKey) {
+        this.activeRunRef.current = null
       }
 
       if (publishedReview && run.abortController.signal.aborted) {
