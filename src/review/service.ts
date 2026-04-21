@@ -1,7 +1,3 @@
-import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-
 import { determineReviewDecision, toReviewEvent } from './decision.js'
 import {
   buildInitialReviewPhase2Prompt,
@@ -23,6 +19,10 @@ import type {
   AdditionalWorkspaceRevision,
   ReviewWorkspaceManager,
 } from './workspace.js'
+import {
+  persistDiscussionContext,
+  reviewCommentsFileName,
+} from './discussion-cache.js'
 import {
   buildDecisionMismatchReason,
   buildPullRequestKey,
@@ -61,14 +61,8 @@ type ReviewServiceOptions = {
   discussionCacheTtlMs?: number
 }
 
-const reviewCommentsFileName = 'pr-review-comments.md'
 const approvedIgnoredReason = 'approved_before'
 const previousReviewedRefName = 'refs/codex-review/previous'
-const defaultDiscussionCacheDirectory = path.join(
-  os.tmpdir(),
-  'tx10-review-discussions',
-)
-const defaultDiscussionCacheTtlMs = 7 * 24 * 60 * 60 * 1_000
 
 function createCompletion(): {
   completion: Promise<void>
@@ -92,8 +86,7 @@ export class ReviewService {
   private readonly approvedLockedPullRequests = new Set<string>()
 
   private readonly approvedLockEnabled: boolean
-  private readonly discussionCacheDirectory: string
-  private readonly discussionCacheTtlMs: number
+  private readonly discussionCacheOptions: ReviewServiceOptions
 
   private activeRun: ActiveRun | null = null
   private queueDrainInProgress = false
@@ -107,10 +100,7 @@ export class ReviewService {
     options: ReviewServiceOptions = {},
   ) {
     this.approvedLockEnabled = options.approvedLockEnabled ?? true
-    this.discussionCacheDirectory =
-      options.discussionCacheDirectory ?? defaultDiscussionCacheDirectory
-    this.discussionCacheTtlMs =
-      options.discussionCacheTtlMs ?? defaultDiscussionCacheTtlMs
+    this.discussionCacheOptions = options
   }
 
   async handlePullRequestEvent(
@@ -473,120 +463,6 @@ export class ReviewService {
     }
   }
 
-  private async cleanupExpiredDiscussionSnapshots(
-    runLogger: AppLogger,
-  ): Promise<void> {
-    const expirationThreshold = Date.now() - this.discussionCacheTtlMs
-
-    const pullRequestDirectories = await readdir(
-      this.discussionCacheDirectory,
-      {
-        encoding: 'utf8',
-        withFileTypes: true,
-      },
-    ).catch((error) => {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') {
-        return null
-      }
-
-      runLogger.warn(
-        {
-          error,
-          event: 'review.discussion_context_cleanup_failed',
-          reason: 'list_directory_failed',
-          status: 'failed',
-        },
-        'Review discussion context cleanup failed',
-      )
-      return null
-    })
-
-    if (!pullRequestDirectories) {
-      return
-    }
-
-    for (const entry of pullRequestDirectories) {
-      if (!entry.isDirectory()) {
-        continue
-      }
-
-      const pullRequestDirectoryPath = path.join(
-        this.discussionCacheDirectory,
-        entry.name,
-      )
-      const files = await readdir(pullRequestDirectoryPath, {
-        encoding: 'utf8',
-        withFileTypes: true,
-      }).catch(() => [])
-
-      for (const file of files) {
-        if (!file.isFile()) {
-          continue
-        }
-
-        const filePath = path.join(pullRequestDirectoryPath, file.name)
-        const fileStats = await stat(filePath).catch(() => null)
-        if (!fileStats || fileStats.mtimeMs > expirationThreshold) {
-          continue
-        }
-
-        await rm(filePath, { force: true }).catch(() => undefined)
-      }
-
-      const remainingFiles = await readdir(pullRequestDirectoryPath, {
-        encoding: 'utf8',
-        withFileTypes: true,
-      }).catch(() => [])
-      if (remainingFiles.length === 0) {
-        await rm(pullRequestDirectoryPath, {
-          force: true,
-          recursive: true,
-        }).catch(() => undefined)
-      }
-    }
-  }
-
-  private async persistDiscussionContext(input: {
-    context: PullRequestContext
-    discussionMarkdown: string
-    runLogger: AppLogger
-    workingDirectory: string
-  }): Promise<void> {
-    await mkdir(this.discussionCacheDirectory, { recursive: true })
-    await this.cleanupExpiredDiscussionSnapshots(input.runLogger)
-    await mkdir(input.workingDirectory, { recursive: true })
-
-    const pullRequestDirectoryName = `${input.context.owner}__${input.context.repo}__pr-${input.context.pullNumber}`
-    const pullRequestDirectoryPath = path.join(
-      this.discussionCacheDirectory,
-      pullRequestDirectoryName,
-    )
-    await mkdir(pullRequestDirectoryPath, { recursive: true })
-
-    const cacheSnapshotPath = path.join(
-      pullRequestDirectoryPath,
-      `${input.context.headSha}.md`,
-    )
-    const workspaceDiscussionPath = path.join(
-      input.workingDirectory,
-      reviewCommentsFileName,
-    )
-
-    await writeFile(cacheSnapshotPath, input.discussionMarkdown, 'utf8')
-    await writeFile(workspaceDiscussionPath, input.discussionMarkdown, 'utf8')
-
-    input.runLogger.info(
-      {
-        cacheSnapshotPath,
-        discussionFile: reviewCommentsFileName,
-        event: 'review.discussion_context_saved',
-        status: 'completed',
-      },
-      'Review discussion context saved',
-    )
-  }
-
   private async reviewPullRequest(
     event: NormalizedPullRequestEvent,
     deliveryLogger: AppLogger,
@@ -781,11 +657,12 @@ export class ReviewService {
 
         const discussionMarkdown =
           await this.github.getPullRequestDiscussionMarkdown(context)
-        await this.persistDiscussionContext({
+        await persistDiscussionContext({
           context,
           discussionMarkdown,
           runLogger,
           workingDirectory: workspace.workingDirectory,
+          options: this.discussionCacheOptions,
         })
 
         if (
