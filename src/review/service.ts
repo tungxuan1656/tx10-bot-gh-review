@@ -3,7 +3,6 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { determineReviewDecision, toReviewEvent } from './decision.js'
-import { isCommentableRightSideLine } from './patch.js'
 import {
   buildInitialReviewPhase2Prompt,
   buildPhase1Prompt,
@@ -19,47 +18,26 @@ import type { AppLogger } from '../logger.js'
 import type { CodexRunner } from './codex.js'
 import type { ReviewPlatform, ReviewReaction } from './github-platform.js'
 import type { NormalizedPullRequestEvent } from './webhook-event.js'
-import type {
-  InlineReviewComment,
-  PriorSuccessfulReviewInfo,
-  PRInfoObject,
-  PullRequestContext,
-  ReviewDecision,
-  ReviewFinding,
-  ReviewableFile,
-} from './types.js'
+import type { PRInfoObject, PullRequestContext } from './types.js'
 import type {
   AdditionalWorkspaceRevision,
   ReviewWorkspaceManager,
 } from './workspace.js'
-
-type RoutedPullRequestEvent =
-  | {
-      status: 'trigger_review'
-      reason: 'review_requested'
-    }
-  | {
-      status: 'cancel_requested'
-      reason: 'cancel_requested'
-    }
-  | {
-      status: 'ignored'
-      reason:
-        | 'approved_before'
-        | 'reviewer_mismatch'
-        | 'synchronize_ignored'
-        | 'unsupported_action'
-    }
+import {
+  buildDecisionMismatchReason,
+  buildPullRequestKey,
+  buildRunKey,
+  getErrorStatusCode,
+  isInvalidInlineReviewCommentError,
+  normalizeOptionalText,
+  resolveReReviewDelta,
+  routePullRequestEvent,
+  separateInlineAndOverflowFindings,
+  toPullRequestContext,
+  toReviewMode,
+} from './service-helpers.js'
 
 type QueueCancelReason = 'cancel_requested'
-
-type ReviewMode = 'initial_review' | 're_review'
-
-type ReReviewDelta = {
-  deltaFromRef: string
-  deltaToRef: string
-  fallbackReason: string | null
-}
 
 type QueueRequest = {
   enqueuedAt: number
@@ -86,8 +64,6 @@ type ReviewServiceOptions = {
 const reviewCommentsFileName = 'pr-review-comments.md'
 const approvedIgnoredReason = 'approved_before'
 const previousReviewedRefName = 'refs/codex-review/previous'
-const workspaceBaseRefName = 'refs/codex-review/base'
-const workspaceHeadRefName = 'refs/codex-review/head'
 const defaultDiscussionCacheDirectory = path.join(
   os.tmpdir(),
   'tx10-review-discussions',
@@ -107,186 +83,6 @@ function createCompletion(): {
   return {
     completion,
     resolveCompletion,
-  }
-}
-
-function normalizeOptionalText(value: string): string | undefined {
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : undefined
-}
-
-function toPullRequestContext(
-  event: NormalizedPullRequestEvent,
-): PullRequestContext {
-  return {
-    action: event.action,
-    installationId: 0,
-    owner: event.owner,
-    repo: event.repo,
-    pullNumber: event.pullNumber,
-    title: event.title,
-    htmlUrl: event.htmlUrl,
-    headSha: event.headSha,
-    headRef: event.headRef,
-    headCloneUrl: event.headCloneUrl,
-    baseSha: event.baseSha,
-    baseRef: event.baseRef,
-    baseCloneUrl: event.baseCloneUrl,
-  }
-}
-
-function buildRunKey(context: PullRequestContext): string {
-  return `${context.owner}/${context.repo}#${context.pullNumber}@${context.headSha}`
-}
-
-function buildPullRequestKey(context: PullRequestContext): string {
-  return `${context.owner}/${context.repo}#${context.pullNumber}`
-}
-
-function toInlineComment(finding: ReviewFinding): string {
-  return [
-    `**${finding.severity.toUpperCase()}**: ${finding.title}`,
-    '',
-    finding.comment,
-  ].join('\n')
-}
-
-function separateInlineAndOverflowFindings(
-  findings: ReviewFinding[],
-  files: ReviewableFile[],
-): {
-  comments: InlineReviewComment[]
-  overflowFindings: ReviewFinding[]
-} {
-  const filesByPath = new Map(files.map((file) => [file.path, file]))
-  const comments: InlineReviewComment[] = []
-  const overflowFindings: ReviewFinding[] = []
-
-  for (const finding of findings) {
-    const file = filesByPath.get(finding.path)
-
-    if (!file || !isCommentableRightSideLine(file.patch, finding.line)) {
-      overflowFindings.push(finding)
-      continue
-    }
-
-    comments.push({
-      path: finding.path,
-      line: finding.line,
-      side: 'RIGHT',
-      body: toInlineComment(finding),
-    })
-  }
-
-  return { comments, overflowFindings }
-}
-
-function isInvalidInlineReviewCommentError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false
-  }
-
-  const candidate = error as {
-    errors?: Array<{
-      code?: string
-      field?: string
-      message?: string
-      resource?: string
-    }>
-    message?: string
-    status?: number
-  }
-
-  if (candidate.status !== 422) {
-    return false
-  }
-
-  const lowerCaseMessage = candidate.message?.toLowerCase() ?? ''
-  if (
-    lowerCaseMessage.includes('review comments is invalid') ||
-    lowerCaseMessage.includes('review threads is invalid')
-  ) {
-    return true
-  }
-
-  return (candidate.errors ?? []).some((validationError) => {
-    const resource = validationError.resource?.toLowerCase()
-    const field = validationError.field?.toLowerCase()
-    const message = validationError.message?.toLowerCase() ?? ''
-
-    return (
-      resource === 'pullrequestreviewcomment' ||
-      resource === 'pullrequestreviewthread' ||
-      field === 'line' ||
-      field === 'side' ||
-      field === 'start_line' ||
-      field === 'start_side' ||
-      field === 'path' ||
-      message.includes('review comment') ||
-      message.includes('review thread')
-    )
-  })
-}
-
-function getErrorStatusCode(error: unknown): number | null {
-  if (!error || typeof error !== 'object') {
-    return null
-  }
-
-  const candidate = error as {
-    status?: unknown
-  }
-
-  return typeof candidate.status === 'number' ? candidate.status : null
-}
-
-function buildDecisionMismatchReason(input: {
-  actualDecision: ReviewDecision
-  expectedDecision: ReviewDecision
-}): string {
-  return [
-    'Codex returned a decision that does not match the findings severity policy.',
-    `Expected "${input.expectedDecision}" but received "${input.actualDecision}".`,
-  ].join(' ')
-}
-
-function toReviewMode(input: PriorSuccessfulReviewInfo): ReviewMode {
-  return input.hasPriorSuccessfulReview ? 're_review' : 'initial_review'
-}
-
-function resolveReReviewDelta(input: {
-  latestReviewedSha: string | null
-  currentHeadSha: string
-  availableRevisionRefs: string[]
-}): ReReviewDelta {
-  if (!input.latestReviewedSha) {
-    return {
-      deltaFromRef: workspaceBaseRefName,
-      deltaToRef: workspaceHeadRefName,
-      fallbackReason: 'latest_review_sha_unavailable',
-    }
-  }
-
-  if (input.latestReviewedSha === input.currentHeadSha) {
-    return {
-      deltaFromRef: workspaceHeadRefName,
-      deltaToRef: workspaceHeadRefName,
-      fallbackReason: null,
-    }
-  }
-
-  if (input.availableRevisionRefs.includes(previousReviewedRefName)) {
-    return {
-      deltaFromRef: previousReviewedRefName,
-      deltaToRef: workspaceHeadRefName,
-      fallbackReason: null,
-    }
-  }
-
-  return {
-    deltaFromRef: workspaceBaseRefName,
-    deltaToRef: workspaceHeadRefName,
-    fallbackReason: 'previous_review_sha_not_fetchable',
   }
 }
 
@@ -323,7 +119,11 @@ export class ReviewService {
     const deliveryLogger = this.createDeliveryLogger(event)
     const context = toPullRequestContext(event)
     const pullRequestKey = buildPullRequestKey(context)
-    const routedEventByAction = this.routePullRequestEvent(event)
+    const routedEventByAction = routePullRequestEvent({
+      actionKind: event.actionKind,
+      botLogin: this.botLogin,
+      requestedReviewerLogin: event.requestedReviewerLogin,
+    })
     const routedEvent =
       routedEventByAction.status === 'trigger_review' &&
       (await this.isApprovedLocked(context, pullRequestKey, deliveryLogger))
@@ -421,31 +221,6 @@ export class ReviewService {
       requestedReviewerLogin: event.requestedReviewerLogin,
       senderLogin: event.senderLogin,
     })
-  }
-
-  private routePullRequestEvent(
-    event: NormalizedPullRequestEvent,
-  ): RoutedPullRequestEvent {
-    if (event.actionKind === 'review_requested') {
-      return event.requestedReviewerLogin === this.botLogin
-        ? { status: 'trigger_review', reason: 'review_requested' }
-        : { status: 'ignored', reason: 'reviewer_mismatch' }
-    }
-
-    if (event.actionKind === 'review_request_removed') {
-      return event.requestedReviewerLogin === this.botLogin
-        ? { status: 'cancel_requested', reason: 'cancel_requested' }
-        : { status: 'ignored', reason: 'reviewer_mismatch' }
-    }
-
-    if (event.actionKind === 'synchronize') {
-      return { status: 'ignored', reason: 'synchronize_ignored' }
-    }
-
-    return {
-      status: 'ignored',
-      reason: 'unsupported_action',
-    }
   }
 
   private async enqueueReview(
