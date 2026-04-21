@@ -5,9 +5,15 @@ const supportedExtensions = new Set([
   '.jsx',
   '.ts',
   '.tsx',
+  '.md',
+  '.sh',
+  '.json',
+  '.yml',
+  '.yaml',
   '.py',
   '.java',
 ])
+const reviewableFileNames = new Set(['Dockerfile', 'Makefile'])
 const ignoredPrefixes = ['node_modules/', 'dist/', 'build/']
 const ignoredSuffixes = [
   '.lock',
@@ -20,6 +26,9 @@ const ignoredSuffixes = [
 
 export function isReviewableFilePath(path: string): boolean {
   const normalizedPath = path.replace(/\\/g, '/')
+  const fileName = normalizedPath.includes('/')
+    ? normalizedPath.slice(normalizedPath.lastIndexOf('/') + 1)
+    : normalizedPath
 
   if (ignoredPrefixes.some((prefix) => normalizedPath.startsWith(prefix))) {
     return false
@@ -27,6 +36,10 @@ export function isReviewableFilePath(path: string): boolean {
 
   if (ignoredSuffixes.some((suffix) => normalizedPath.endsWith(suffix))) {
     return false
+  }
+
+  if (reviewableFileNames.has(fileName)) {
+    return true
   }
 
   const extension = normalizedPath.includes('.')

@@ -11,6 +11,18 @@ describe('isReviewableFilePath', () => {
     expect(isReviewableFilePath('app/main.py')).toBe(true)
   })
 
+  it('accepts markdown and config files', () => {
+    expect(isReviewableFilePath('README.md')).toBe(true)
+    expect(isReviewableFilePath('docs/review-contract.md')).toBe(true)
+    expect(isReviewableFilePath('config/settings.json')).toBe(true)
+    expect(isReviewableFilePath('.github/workflows/ci.yaml')).toBe(true)
+  })
+
+  it('accepts explicit file name allowlist', () => {
+    expect(isReviewableFilePath('Dockerfile')).toBe(true)
+    expect(isReviewableFilePath('infra/Makefile')).toBe(true)
+  })
+
   it('rejects ignored directories and lock files', () => {
     expect(isReviewableFilePath('dist/index.js')).toBe(false)
     expect(isReviewableFilePath('node_modules/pkg/index.ts')).toBe(false)
@@ -40,6 +52,11 @@ describe('filterReviewableFiles', () => {
         path: 'src/app.ts',
         status: 'modified',
         patch: '@@ -1 +1 @@\n-console.log()\n+logger.info()',
+      },
+      {
+        path: 'README.md',
+        status: 'modified',
+        patch: '@@ -1 +1 @@\n-old\n+new',
       },
     ])
   })

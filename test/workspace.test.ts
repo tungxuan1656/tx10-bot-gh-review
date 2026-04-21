@@ -150,12 +150,22 @@ describe('createTemporaryReviewWorkspaceManager', () => {
 
     try {
       expect(workspace.workingDirectory).toContain('codex-review-workspace-')
-      expect(workspace.reviewableFiles).toHaveLength(1)
-      expect(workspace.reviewableFiles[0]).toMatchObject({
+      expect(workspace.reviewableFiles).toHaveLength(2)
+      expect(workspace.reviewableFiles).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: 'README.md' }),
+          expect.objectContaining({ path: 'src/app.ts' }),
+        ]),
+      )
+
+      const sourceFile = workspace.reviewableFiles.find(
+        (file) => file.path === 'src/app.ts',
+      )
+      expect(sourceFile).toMatchObject({
         path: 'src/app.ts',
       })
-      expect(workspace.reviewableFiles[0]?.content).toContain('head')
-      expect(workspace.reviewableFiles[0]?.patch).toContain('@@')
+      expect(sourceFile?.content).toContain('head')
+      expect(sourceFile?.patch).toContain('@@')
       expect(workspace.diff).toContain('diff --git a/src/app.ts b/src/app.ts')
 
       // pr-info.yaml should be written to the workspace root
