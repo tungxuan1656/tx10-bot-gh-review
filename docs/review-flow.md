@@ -112,13 +112,22 @@ Additional notes:
 - If inline target is invalid, fallback to top-level review body and do not fail entire review.
 - Include `changesOverview` in body only when non-empty.
 
-## 6. Idempotency and Retry Expectations
+## 6. Reaction Policy
+
+- When a real review run starts, set the PR reaction to `eyes`.
+- When the review publishes `APPROVE`, update the reaction to `hooray`.
+- When the review publishes `REQUEST_CHANGES`, update the reaction to `confused`.
+- When the bot ignores a request without starting a review, update the reaction to `laugh`.
+- If the PR is already locked by a prior bot `APPROVE`, keep the existing reaction unchanged for later requests.
+- `review_request_removed` and review failures do not change the reaction.
+
+## 7. Idempotency and Retry Expectations
 
 - `synchronize` ignore must never suppress future manual re-review.
 - A new manual `review_requested` should still run review even if head SHA equals a previously synchronized commit.
 - First-run failure must not lock PR into re-review mode.
 
-## 7. End-to-End Scenarios
+## 8. End-to-End Scenarios
 
 ### Scenario A: First Request
 

@@ -50,6 +50,7 @@ sequenceDiagram
 - Initial review uses a 2-phase Codex flow; re-review uses a single fast phase focused on delta from the latest successful bot-reviewed SHA.
 - Each run fetches PR discussion history from GitHub (GraphQL-first with REST fallback), stores it as `pr-review-comments.md`, and prompts Codex to read it from workspace.
 - `review_request_removed` requests a best-effort in-memory cancellation for the active run and removes queued work for that PR.
+- PR issue reactions are updated best-effort to reflect review state: `eyes` during review, `hooray` for `APPROVE`, `confused` for `REQUEST_CHANGES`, and `laugh` for ignored requests that never enter a review run. `approved_before`, cancellation, and failure do not change the reaction.
 - Approved lock can skip all subsequent PR requests on a PR after a bot `APPROVE` when enabled. Ignored requests use reason `approved_before`.
 - Codex output is trusted only after JSON Schema validation.
 - Idempotency uses a marker tied to `(repo, pull request, head SHA, delivery run token)` and checks both prior reviews and issue comments.

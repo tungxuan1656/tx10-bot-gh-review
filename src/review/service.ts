@@ -17,7 +17,7 @@ import {
 import { createChildLogger } from '../logger.js'
 import type { AppLogger } from '../logger.js'
 import type { CodexRunner } from './codex.js'
-import type { ReviewPlatform } from './github-platform.js'
+import type { ReviewPlatform, ReviewReaction } from './github-platform.js'
 import type { NormalizedPullRequestEvent } from './webhook-event.js'
 import type {
   InlineReviewComment,
@@ -348,6 +348,18 @@ export class ReviewService {
     )
 
     if (routedEvent.status === 'ignored') {
+      if (
+        routedEvent.reason !== approvedIgnoredReason &&
+        !this.hasPendingReviewForPullRequest(pullRequestKey)
+      ) {
+        await this.setPullRequestReaction(
+          context,
+          'laugh',
+          deliveryLogger,
+          'ignored_event',
+        )
+      }
+
       return
     }
 
@@ -559,6 +571,44 @@ export class ReviewService {
     request.resolveCompletion()
 
     return true
+  }
+
+  private hasPendingReviewForPullRequest(pullRequestKey: string): boolean {
+    return (
+      this.activeRun?.pullRequestKey === pullRequestKey ||
+      this.queuedByPullRequestKey.has(pullRequestKey)
+    )
+  }
+
+  private async setPullRequestReaction(
+    context: PullRequestContext,
+    reaction: ReviewReaction,
+    deliveryLogger: AppLogger,
+    reason: string,
+  ): Promise<void> {
+    try {
+      await this.github.setPullRequestReaction(context, reaction)
+      deliveryLogger.info(
+        {
+          event: 'review.reaction_updated',
+          reaction,
+          reason,
+          status: 'completed',
+        },
+        'Review reaction updated',
+      )
+    } catch (error) {
+      deliveryLogger.warn(
+        {
+          error,
+          event: 'review.reaction_failed',
+          reaction,
+          reason,
+          status: 'failed',
+        },
+        'Review reaction update failed',
+      )
+    }
   }
 
   private requestRunCancellation(
@@ -937,8 +987,22 @@ export class ReviewService {
             },
             'Review completed',
           )
+
+          await this.setPullRequestReaction(
+            context,
+            'laugh',
+            runLogger,
+            'no_reviewable_files',
+          )
           return
         }
+
+        await this.setPullRequestReaction(
+          context,
+          'eyes',
+          runLogger,
+          'review_started',
+        )
 
         const discussionMarkdown =
           await this.github.getPullRequestDiscussionMarkdown(context)
@@ -1237,6 +1301,13 @@ export class ReviewService {
             'Review published',
           )
         }
+
+        await this.setPullRequestReaction(
+          context,
+          reviewEvent === 'APPROVE' ? 'hooray' : 'confused',
+          runLogger,
+          'review_published',
+        )
 
         if (reviewEvent === 'APPROVE' && this.approvedLockEnabled) {
           this.approvedLockedPullRequests.add(pullRequestKey)

@@ -17,6 +17,8 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 - `REQUEST_CHANGES` for `critical` or `major`
 - `APPROVE` for `minor`, `improvement`, or no findings
 - `APPROVE` may still include inline comments or summary findings for non-blocking issues
+- PR reactions mirror review state: `eyes` while actively reviewing, `hooray` on `APPROVE`, `confused` on `REQUEST_CHANGES`, and `laugh` for ignored requests that do not get reviewed.
+- `approved_before`, `review_request_removed`, and review failures are reaction no-ops.
 - Review starts only on `review_requested` for the configured bot
 - `synchronize` events are ignored and never auto-trigger review
 - Optional approved lock: after bot `APPROVE`, all subsequent PR requests are ignored with reason `approved_before`

@@ -15,6 +15,15 @@ import type {
 const maxCommits = 30
 const maxCommitMessageChars = 200
 
+export type ReviewReaction = 'eyes' | 'hooray' | 'confused' | 'laugh'
+
+const reviewReactionContents = new Set<ReviewReaction>([
+  'eyes',
+  'hooray',
+  'confused',
+  'laugh',
+])
+
 type ReviewPlatform = {
   listPullRequestFiles(
     context: PullRequestContext,
@@ -27,9 +36,17 @@ type ReviewPlatform = {
     context: PullRequestContext,
     marker: string,
   ): Promise<boolean>
-  getPullRequestDiscussionMarkdown(context: PullRequestContext): Promise<string>
-  getPriorSuccessfulReview(context: PullRequestContext): Promise<PriorSuccessfulReviewInfo>
+  getPullRequestDiscussionMarkdown(
+    context: PullRequestContext,
+  ): Promise<string>
+  getPriorSuccessfulReview(
+    context: PullRequestContext,
+  ): Promise<PriorSuccessfulReviewInfo>
   getPRInfo(context: PullRequestContext): Promise<PRInfoObject>
+  setPullRequestReaction(
+    context: PullRequestContext,
+    reaction: ReviewReaction,
+  ): Promise<void>
   publishReview(input: {
     context: PullRequestContext
     body: string
@@ -44,7 +61,7 @@ type ReviewPlatform = {
 
 type InstallationOctokit = Pick<Octokit, 'paginate'> & {
   graphql?: Octokit['graphql']
-  rest: Pick<Octokit['rest'], 'issues' | 'pulls' | 'repos'>
+  rest: Pick<Octokit['rest'], 'issues' | 'pulls' | 'reactions' | 'repos'>
 }
 
 type GitHubReviewPlatformDependencies = {
@@ -53,6 +70,14 @@ type GitHubReviewPlatformDependencies = {
 
 type ReviewResultMarkerAuthor = {
   body?: string | null
+  user?: {
+    login?: string | null
+  } | null
+}
+
+type IssueReaction = {
+  content?: string | null
+  id: number
   user?: {
     login?: string | null
   } | null
@@ -113,6 +138,25 @@ function truncateCommitMessage(message: string): string {
     return firstLine
   }
   return `${firstLine.slice(0, maxCommitMessageChars)}...`
+}
+
+function isReviewReactionContent(
+  content: string | null | undefined,
+): content is ReviewReaction {
+  return (
+    typeof content === 'string' &&
+    reviewReactionContents.has(content as ReviewReaction)
+  )
+}
+
+function isBotAuthoredReaction(
+  reaction: IssueReaction,
+  botLogin: string,
+): boolean {
+  return (
+    reaction.user?.login === botLogin &&
+    isReviewReactionContent(reaction.content)
+  )
 }
 
 function toDiscussionMarkdown(input: {
@@ -579,6 +623,75 @@ export function createGitHubReviewPlatform(
         commits,
         changedFilePaths,
       }
+    },
+
+    async setPullRequestReaction(context, reaction) {
+      const octokit = getOctokit()
+
+      const currentReactions = await octokit.paginate(
+        octokit.rest.reactions.listForIssue,
+        {
+          owner: context.owner,
+          repo: context.repo,
+          issue_number: context.pullNumber,
+          per_page: 100,
+        },
+      )
+
+      const botReactions = (currentReactions as IssueReaction[]).filter((item) =>
+        isBotAuthoredReaction(item, config.githubBotLogin),
+      )
+
+      const matchingReaction = botReactions.find(
+        (item) => item.content === reaction,
+      )
+
+      if (botReactions.length === 1 && matchingReaction) {
+        return
+      }
+
+      const staleReactions = botReactions.filter(
+        (item) => item.content !== reaction,
+      )
+
+      if (matchingReaction) {
+        if (staleReactions.length > 0) {
+          await Promise.all(
+            staleReactions.map((item) =>
+              octokit.rest.reactions.deleteForIssue({
+                owner: context.owner,
+                repo: context.repo,
+                reaction_id: item.id,
+                issue_number: context.pullNumber,
+              }),
+            ),
+          )
+        }
+
+        return
+      }
+
+      await octokit.rest.reactions.createForIssue({
+        owner: context.owner,
+        repo: context.repo,
+        issue_number: context.pullNumber,
+        content: reaction,
+      })
+
+      if (staleReactions.length === 0) {
+        return
+      }
+
+      await Promise.all(
+        staleReactions.map((item) =>
+          octokit.rest.reactions.deleteForIssue({
+            owner: context.owner,
+            repo: context.repo,
+            reaction_id: item.id,
+            issue_number: context.pullNumber,
+          }),
+        ),
+      )
     },
 
     async publishReview({ context, body, event, comments }) {

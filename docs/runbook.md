@@ -63,6 +63,18 @@ Expected response:
 - The fallback comment is intentionally neutral and never blocks merging on transient infrastructure failures.
 - Non-blocking findings are still published as an `APPROVE` review when the response decision is consistent with the severity policy.
 
+## Reaction Policy
+
+| Review state | PR reaction | Notes |
+| --- | --- | --- |
+| Review in progress | `eyes` | Set when the bot starts a real review run |
+| Published `APPROVE` | `hooray` | Replaces the in-progress reaction |
+| Published `REQUEST_CHANGES` | `confused` | Replaces the in-progress reaction |
+| Ignored request without review | `laugh` | Applies to ignored actions such as reviewer mismatch, unsupported action, or synchronize when the PR is not already pending review |
+| `approved_before` | no-op | Keep the existing emoji unchanged |
+| `review_request_removed` | no-op | Cancel only; do not change reaction state |
+| Failure | no-op | Leave the current reaction unchanged |
+
 ## Logging Guide
 
 Set `LOG_LEVEL=info` for normal debugging and `LOG_LEVEL=debug` when you need deeper step-by-step traces.

@@ -101,6 +101,7 @@ function createGitHubPlatform(overrides: Partial<ReviewPlatform> = {}) {
   const hasPublishedResult = vi.fn((_context: unknown, marker: string) =>
     Promise.resolve(seenMarkers.has(marker)),
   )
+  const setPullRequestReaction = vi.fn(() => Promise.resolve())
   const publishReview = vi.fn((input: PublishReviewInput) => {
     const marker = input.body.split('\n')[0]
     if (marker) {
@@ -129,6 +130,7 @@ function createGitHubPlatform(overrides: Partial<ReviewPlatform> = {}) {
     hasPublishedResult,
     publishFailureComment,
     publishReview,
+    setPullRequestReaction,
     getFileContent: vi.fn(),
     listPullRequestFiles: vi.fn(),
   }
@@ -266,6 +268,16 @@ describe('ReviewService', () => {
     expect(reviewTwoPhase).toHaveBeenCalledTimes(1)
     expect(review).not.toHaveBeenCalled()
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(1)
+    expect(github.mocks.setPullRequestReaction).toHaveBeenNthCalledWith(
+      1,
+      expect.any(Object),
+      'eyes',
+    )
+    expect(github.mocks.setPullRequestReaction).toHaveBeenNthCalledWith(
+      2,
+      expect.any(Object),
+      'hooray',
+    )
   })
 
   it('uses fast single-phase re-review flow after a prior successful bot review', async () => {
@@ -409,6 +421,11 @@ describe('ReviewService', () => {
     expect(reviewTwoPhase).not.toHaveBeenCalled()
     expect(review).not.toHaveBeenCalled()
     expect(github.mocks.publishReview).not.toHaveBeenCalled()
+    expect(github.mocks.setPullRequestReaction).toHaveBeenCalledTimes(1)
+    expect(github.mocks.setPullRequestReaction).toHaveBeenCalledWith(
+      expect.any(Object),
+      'laugh',
+    )
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'webhook.routed',
@@ -593,6 +610,7 @@ describe('ReviewService', () => {
     expect(reviewTwoPhase).not.toHaveBeenCalled()
     expect(review).not.toHaveBeenCalled()
     expect(github.mocks.publishReview).not.toHaveBeenCalled()
+    expect(github.mocks.setPullRequestReaction).not.toHaveBeenCalled()
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'webhook.routed',
@@ -652,5 +670,63 @@ describe('ReviewService', () => {
       .calls[1]?.[1]
     expect(firstMarker).not.toEqual(secondMarker)
     expect(github.mocks.publishReview).toHaveBeenCalledTimes(2)
+  })
+
+  it('updates the final reaction to confused when review requests changes', async () => {
+    const github = createGitHubPlatform({
+      getPriorSuccessfulReview: vi.fn().mockResolvedValue(
+        createPriorReviewInfo({
+          hasPriorSuccessfulReview: true,
+          latestReviewedSha: 'sha-prev',
+          latestReviewState: 'CHANGES_REQUESTED',
+        }),
+      ),
+    })
+    const workspace = createWorkspaceManager()
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult({
+        decision: 'request_changes',
+        findings: [
+          {
+            severity: 'major',
+            path: 'src/app.ts',
+            line: 1,
+            title: 'Needs fix',
+            comment: 'Please address this issue.',
+          },
+        ],
+      }),
+    })
+
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+    })
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
+    )
+
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-request-changes' }),
+    )
+
+    expect(github.mocks.setPullRequestReaction).toHaveBeenNthCalledWith(
+      1,
+      expect.any(Object),
+      'eyes',
+    )
+    expect(github.mocks.setPullRequestReaction).toHaveBeenNthCalledWith(
+      2,
+      expect.any(Object),
+      'confused',
+    )
   })
 })

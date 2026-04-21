@@ -74,6 +74,65 @@ function createPlatformWithPublishedItems(input: {
   return { platform }
 }
 
+function createPlatformWithReactions(input: {
+  reactions: Array<{
+    content?: string | null
+    id: number
+    user?: { login?: string | null }
+  }>
+}) {
+  const listFiles = vi.fn()
+  const listReviews = vi.fn()
+  const createReview = vi.fn()
+  const listComments = vi.fn()
+  const createComment = vi.fn()
+  const listForIssue = vi.fn()
+  const createForIssue = vi.fn()
+  const deleteForIssue = vi.fn()
+  const getContent = vi.fn()
+  const paginate = vi.fn((route: unknown) => {
+    if (route === listForIssue) {
+      return Promise.resolve(input.reactions)
+    }
+
+    return Promise.resolve([])
+  })
+
+  const platform = createGitHubReviewPlatform(
+    {
+      githubToken: 'ghp_test_token',
+      githubBotLogin: 'review-bot',
+    },
+    {
+      createOctokit: () =>
+        ({
+          paginate,
+          rest: {
+            reactions: {
+              createForIssue,
+              deleteForIssue,
+              listForIssue,
+            },
+            pulls: {
+              listFiles,
+              listReviews,
+              createReview,
+            },
+            issues: {
+              listComments,
+              createComment,
+            },
+            repos: {
+              getContent,
+            },
+          },
+        }) as never,
+    },
+  )
+
+  return { platform, mocks: { createForIssue, deleteForIssue, paginate } }
+}
+
 describe('createGitHubReviewPlatform', () => {
   it('ignores marker comments that were not authored by the configured bot login', async () => {
     const marker = buildReviewMarker('abc123')
@@ -480,6 +539,42 @@ describe('createGitHubReviewPlatform', () => {
       hasPriorSuccessfulReview: true,
       latestReviewedSha: 'sha-new',
       latestReviewState: 'COMMENTED',
+    })
+  })
+
+  it('replaces the bot reaction when the requested reaction changes', async () => {
+    const { platform, mocks } = createPlatformWithReactions({
+      reactions: [
+        {
+          content: 'laugh',
+          id: 11,
+          user: {
+            login: 'review-bot',
+          },
+        },
+        {
+          content: 'eyes',
+          id: 12,
+          user: {
+            login: 'teammate',
+          },
+        },
+      ],
+    })
+
+    await platform.setPullRequestReaction(createPullRequestContext(), 'hooray')
+
+    expect(mocks.deleteForIssue).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'repo',
+      issue_number: 42,
+      reaction_id: 11,
+    })
+    expect(mocks.createForIssue).toHaveBeenCalledWith({
+      content: 'hooray',
+      issue_number: 42,
+      owner: 'acme',
+      repo: 'repo',
     })
   })
 })
