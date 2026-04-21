@@ -4,8 +4,10 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 
 import { reviewResultSchema } from './types.js'
-import type { AppLogger } from '../logger.js'
-import type { CodexReviewOutcome } from './types.js'
+import type { AppLogger } from '../types/app.js'
+import type { CodexReviewOutcome, CodexRunner } from './types.js'
+
+export type { CodexRunner } from './types.js'
 
 const maxLoggedOutputCharacters = 2_000
 const maxLoggedOutputTailCharacters = 1_000
@@ -104,27 +106,6 @@ function detectFailureHint(stderr: string): string | undefined {
   }
 
   return undefined
-}
-
-export type CodexRunner = {
-  review(
-    input: {
-      prompt: string
-      workingDirectory: string
-      abortSignal?: AbortSignal
-    },
-    logger?: AppLogger,
-  ): Promise<CodexReviewOutcome>
-
-  reviewTwoPhase(
-    input: {
-      phase1Prompt: string
-      phase2Prompt: (phase1Output: string) => string
-      workingDirectory: string
-      abortSignal?: AbortSignal
-    },
-    logger?: AppLogger,
-  ): Promise<CodexReviewOutcome>
 }
 
 export function createCodexRunner(input: {

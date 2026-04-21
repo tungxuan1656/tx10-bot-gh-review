@@ -1,11 +1,7 @@
 import { isReviewableFilePath } from './filter-files.js'
+import type { ChangedFile } from './types.js'
 
 export const maxDiffChars = 80_000
-
-export type ChangedFile = {
-  path: string
-  status: string
-}
 
 function isRenameOrCopy(status: string): boolean {
   return status.startsWith('R') || status.startsWith('C')

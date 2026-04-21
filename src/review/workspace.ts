@@ -7,10 +7,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { AppLogger } from '../logger.js'
+import type { AppLogger } from '../types/app.js'
 import type {
+  CreateTemporaryReviewWorkspaceManagerInput,
   PRInfoObject,
   PullRequestContext,
+  ReviewWorkspaceManager,
+  WorkspacePrepareOptions,
+  PreparedReviewWorkspace,
   ReviewableFile,
 } from './types.js'
 import {
@@ -30,44 +34,15 @@ import {
   resolveProjectRootFrom,
 } from './workspace-review-skills.js'
 
+export type {
+  AdditionalWorkspaceRevision,
+  PreparedReviewWorkspace,
+  ReviewWorkspaceManager,
+  WorkspacePrepareOptions,
+} from './types.js'
+
 const baseRefName = 'refs/codex-review/base'
 const headRefName = 'refs/codex-review/head'
-
-export type PreparedReviewWorkspace = {
-  availableRevisionRefs: string[]
-  cleanup(): Promise<void>
-  diff: string
-  prInfo: PRInfoObject
-  reviewableFiles: ReviewableFile[]
-  workingDirectory: string
-}
-
-export type AdditionalWorkspaceRevision = {
-  revision: string
-  fallbackRef: string
-  localRef: string
-  remote?: 'origin' | 'head'
-}
-
-export type WorkspacePrepareOptions = {
-  additionalRevisions?: AdditionalWorkspaceRevision[]
-}
-
-export type ReviewWorkspaceManager = {
-  prepareWorkspace(
-    context: PullRequestContext,
-    prInfo: PRInfoObject,
-    loggerOverride?: AppLogger,
-    options?: WorkspacePrepareOptions,
-  ): Promise<PreparedReviewWorkspace>
-}
-
-type CreateTemporaryReviewWorkspaceManagerInput = {
-  gitBin?: string
-  githubToken: string
-  logger: AppLogger
-  timeoutMs?: number
-}
 
 const currentFilePath = fileURLToPath(import.meta.url)
 

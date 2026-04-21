@@ -1,29 +1,14 @@
-import type { AppLogger } from '../logger.js'
-import type { NormalizedPullRequestEvent } from './webhook-event.js'
-import type { PullRequestContext } from './types.js'
+import type { AppLogger } from '../types/app.js'
+import type {
+  ActiveRun,
+  ActiveRunRef,
+  NormalizedPullRequestEvent,
+  QueueCancelReason,
+  QueueRequest,
+} from './types.js'
 import { buildPullRequestKey, toPullRequestContext } from './service-helpers.js'
 
-export type QueueCancelReason = 'cancel_requested'
-
-export type QueueRequest = {
-  enqueuedAt: number
-  completion: Promise<void>
-  event: NormalizedPullRequestEvent
-  resolveCompletion: () => void
-}
-
-export type ActiveRun = {
-  abortController: AbortController
-  cancellationLogged: boolean
-  cancellationReason: QueueCancelReason | null
-  context: PullRequestContext
-  pullRequestKey: string
-  runKey: string
-}
-
-export type ActiveRunRef = {
-  current: ActiveRun | null
-}
+export type { ActiveRun, ActiveRunRef } from './types.js'
 
 function createCompletion(): {
   completion: Promise<void>

@@ -1,7 +1,11 @@
-import type { InstallationOctokit } from './github-discussion.js'
-import type { PullRequestContext } from './types.js'
+import type {
+  InstallationOctokit,
+  IssueReaction,
+  PullRequestContext,
+  ReviewReaction,
+} from './types.js'
 
-export type ReviewReaction = 'eyes' | 'hooray' | 'confused' | 'laugh'
+export type { ReviewReaction } from './types.js'
 
 const reviewReactionContents = new Set<ReviewReaction>([
   'eyes',
@@ -9,14 +13,6 @@ const reviewReactionContents = new Set<ReviewReaction>([
   'confused',
   'laugh',
 ])
-
-type IssueReaction = {
-  content?: string | null
-  id: number
-  user?: {
-    login?: string | null
-  } | null
-}
 
 function isReviewReactionContent(
   content: string | null | undefined,

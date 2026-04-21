@@ -1,11 +1,5 @@
 import { buildFailureComment, buildReviewMarker } from './summary.js'
 import { createChildLogger } from '../logger.js'
-import type { AppLogger } from '../logger.js'
-import type { CodexRunner } from './codex.js'
-import type { ReviewPlatform } from './github-platform.js'
-import type { NormalizedPullRequestEvent } from './webhook-event.js'
-import type { ReviewWorkspaceManager } from './workspace.js'
-import type { DiscussionCacheOptions } from './discussion-cache.js'
 import { persistDiscussionContext } from './discussion-cache.js'
 import {
   buildPullRequestKey,
@@ -14,21 +8,11 @@ import {
   toPullRequestContext,
   toReviewMode,
 } from './service-helpers.js'
-import type { ActiveRun, ActiveRunRef, ReviewQueueManager } from './review-queue.js'
+import type {
+  ActiveRun,
+  ReviewExecutionInput,
+} from './types.js'
 import { buildAdditionalRevisions, runReviewWorkflow } from './review-workflow.js'
-
-type ReviewExecutionInput = {
-  approvedLockEnabled: boolean
-  approvedLockedPullRequests: Set<string>
-  codex: CodexRunner
-  discussionCacheOptions: DiscussionCacheOptions
-  event: NormalizedPullRequestEvent
-  github: ReviewPlatform
-  queueManager: ReviewQueueManager
-  activeRunRef: ActiveRunRef
-  workspaceManager: ReviewWorkspaceManager
-  deliveryLogger: AppLogger
-}
 
 export async function reviewPullRequest(input: ReviewExecutionInput): Promise<void> {
   const context = toPullRequestContext(input.event)

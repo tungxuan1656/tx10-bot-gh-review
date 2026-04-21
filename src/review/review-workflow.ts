@@ -6,20 +6,20 @@ import {
 } from './prompt.js'
 import { buildFailureComment } from './summary.js'
 import { createChildLogger } from '../logger.js'
-import type { AppLogger } from '../logger.js'
-import type { CodexRunner } from './codex.js'
-import type { ReviewPlatform } from './github-platform.js'
 import { reviewCommentsFileName } from './discussion-cache.js'
 import type {
   AdditionalWorkspaceRevision,
-  PreparedReviewWorkspace,
-} from './workspace.js'
-import type { PriorSuccessfulReviewInfo, PullRequestContext } from './types.js'
+} from './types.js'
 import {
   buildDecisionMismatchReason,
   resolveReReviewDelta,
 } from './service-helpers.js'
-import type { ActiveRun, ReviewQueueManager } from './review-queue.js'
+import type {
+  ActiveRun,
+  CodexRunner,
+  PriorSuccessfulReviewInfo,
+  ReviewWorkflowInput,
+} from './types.js'
 import {
   publishSuccessfulReview,
   setPullRequestReaction,
@@ -51,28 +51,13 @@ export function buildAdditionalRevisions(input: {
   ]
 }
 
-export type ReviewWorkflowInput = {
-  approvedLockEnabled: boolean
-  approvedLockedPullRequests: Set<string>
-  codex: CodexRunner
-  context: PullRequestContext
-  deliveryId: string
-  github: ReviewPlatform
-  priorSuccessfulReview: PriorSuccessfulReviewInfo
-  queueManager: ReviewQueueManager
-  reviewMode: 'initial_review' | 're_review'
-  run: ActiveRun
-  runLogger: AppLogger
-  workspace: PreparedReviewWorkspace
-}
-
 async function runInitialReview(input: {
-  codex: CodexRunner
   context: ReviewWorkflowInput['context']
   reviewablePaths: string[]
   run: ActiveRun
-  runLogger: AppLogger
-  workspace: PreparedReviewWorkspace
+  runLogger: ReviewWorkflowInput['runLogger']
+  workspace: ReviewWorkflowInput['workspace']
+  codex: ReviewWorkflowInput['codex']
 }): Promise<Awaited<ReturnType<CodexRunner['reviewTwoPhase']>>> {
   const phase1Prompt = buildPhase1Prompt({
     owner: input.context.owner,
@@ -118,13 +103,13 @@ async function runInitialReview(input: {
 }
 
 async function runReReview(input: {
-  codex: CodexRunner
   context: ReviewWorkflowInput['context']
   priorSuccessfulReview: PriorSuccessfulReviewInfo
   reviewablePaths: string[]
   run: ActiveRun
-  runLogger: AppLogger
-  workspace: PreparedReviewWorkspace
+  runLogger: ReviewWorkflowInput['runLogger']
+  workspace: ReviewWorkflowInput['workspace']
+  codex: ReviewWorkflowInput['codex']
 }): Promise<Awaited<ReturnType<CodexRunner['review']>>> {
   const delta = resolveReReviewDelta({
     latestReviewedSha: input.priorSuccessfulReview.latestReviewedSha,

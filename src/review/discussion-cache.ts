@@ -2,8 +2,8 @@ import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import type { AppLogger } from '../logger.js'
-import type { PullRequestContext } from './types.js'
+import type { AppLogger } from '../types/app.js'
+import type { DiscussionCacheOptions, PullRequestContext } from './types.js'
 
 export const reviewCommentsFileName = 'pr-review-comments.md'
 const defaultDiscussionCacheDirectory = path.join(
@@ -11,11 +11,6 @@ const defaultDiscussionCacheDirectory = path.join(
   'tx10-review-discussions',
 )
 const defaultDiscussionCacheTtlMs = 7 * 24 * 60 * 60 * 1_000
-
-export type DiscussionCacheOptions = {
-  discussionCacheDirectory?: string
-  discussionCacheTtlMs?: number
-}
 
 function getDiscussionCacheDirectory(
   options: DiscussionCacheOptions,
@@ -45,7 +40,7 @@ async function cleanupExpiredDiscussionSnapshots(input: {
 
     input.runLogger.warn(
       {
-        error,
+        error: error instanceof Error ? error : new Error(String(error)),
         event: 'review.discussion_context_cleanup_failed',
         reason: 'list_directory_failed',
         status: 'failed',

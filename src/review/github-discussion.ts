@@ -1,39 +1,16 @@
-import type { Octokit } from '@octokit/rest'
-
 import { renderPullRequestDiscussionMarkdown } from './github-discussion-markdown.js'
-import type { PullRequestContext } from './types.js'
+import type {
+  DiscussionAuthor,
+  InstallationOctokit,
+  PullRequestContext,
+  PullRequestDiscussionPayload,
+} from './types.js'
 
-export type DiscussionAuthor = {
-  login?: string | null
-} | null
-
-export type PullRequestDiscussionPayload = {
-  issueComments: Array<{
-    authorLogin: string
-    body: string
-    createdAt: string
-  }>
-  reviews: Array<{
-    authorLogin: string
-    body: string
-    state: string
-    submittedAt: string
-  }>
-  reviewThreads: Array<{
-    comments: Array<{
-      authorLogin: string
-      body: string
-      createdAt: string
-      line: number | null
-      path: string | null
-    }>
-    isResolved: boolean
-    resolvedByLogin: string | null
-  }>
-  source: 'graphql' | 'rest'
-}
-
-export type InstallationOctokit = Pick<Octokit, 'paginate' | 'graphql' | 'rest'>
+export type {
+  DiscussionAuthor,
+  InstallationOctokit,
+  PullRequestDiscussionPayload,
+} from './types.js'
 
 function toAuthorLogin(author: DiscussionAuthor): string {
   return author?.login ?? 'unknown'

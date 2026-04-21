@@ -1,13 +1,5 @@
 import { spawn } from 'node:child_process'
-
-export type RunCommandInput = {
-  args: string[]
-  bin: string
-  cwd: string
-  env?: NodeJS.ProcessEnv
-  redactions?: string[]
-  timeoutMs: number
-}
+import type { RunCommandInput } from './types.js'
 
 export function buildAuthenticatedRemoteUrl(
   cloneUrl: string,

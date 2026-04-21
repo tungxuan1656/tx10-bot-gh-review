@@ -1,20 +1,17 @@
 import { createChildLogger } from '../logger.js'
-import type { AppLogger } from '../logger.js'
-import type { CodexRunner } from './codex.js'
-import type { ReviewPlatform } from './github-platform.js'
-import type { NormalizedPullRequestEvent } from './webhook-event.js'
-import type { PullRequestContext } from './types.js'
-import type { ReviewWorkspaceManager } from './workspace.js'
+import type { AppLogger } from '../types/app.js'
 import { ReviewQueueManager, type ActiveRunRef } from './review-queue.js'
 import { buildPullRequestKey, routePullRequestEvent, toPullRequestContext } from './service-helpers.js'
 import { reviewPullRequest } from './review-execution.js'
 import { setPullRequestReaction } from './review-publishing.js'
-
-type ReviewServiceOptions = {
-  approvedLockEnabled?: boolean
-  discussionCacheDirectory?: string
-  discussionCacheTtlMs?: number
-}
+import type {
+  CodexRunner,
+  NormalizedPullRequestEvent,
+  PullRequestContext,
+  ReviewPlatform,
+  ReviewServiceOptions,
+  ReviewWorkspaceManager,
+} from './types.js'
 
 const approvedIgnoredReason = 'approved_before'
 

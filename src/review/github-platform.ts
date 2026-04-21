@@ -1,21 +1,12 @@
 import { Octokit } from '@octokit/rest'
 
-import type { AppConfig } from '../config.js'
-import type {
-  GitHubPullRequestFile,
-  InlineReviewComment,
-  PriorSuccessfulReviewInfo,
-  PRInfoObject,
-  PullRequestContext,
-  ReviewEvent,
-} from './types.js'
+import type { AppConfig } from '../types/app.js'
+import type { GitHubReviewPlatformDependencies, ReviewPlatform } from './types.js'
 import {
   getPullRequestDiscussionMarkdown,
-  type InstallationOctokit,
 } from './github-discussion.js'
 import {
   setPullRequestReaction as setPullRequestIssueReaction,
-  type ReviewReaction,
 } from './github-reactions.js'
 import {
   getFileContent as getPullRequestFileContent,
@@ -24,45 +15,6 @@ import {
   hasPublishedResult as hasPullRequestPublishedResult,
   listPullRequestFiles,
 } from './github-pr-data.js'
-
-type ReviewPlatform = {
-  listPullRequestFiles(
-    context: PullRequestContext,
-  ): Promise<GitHubPullRequestFile[]>
-  getFileContent(
-    context: PullRequestContext,
-    path: string,
-  ): Promise<string | null>
-  hasPublishedResult(
-    context: PullRequestContext,
-    marker: string,
-  ): Promise<boolean>
-  getPullRequestDiscussionMarkdown(
-    context: PullRequestContext,
-  ): Promise<string>
-  getPriorSuccessfulReview(
-    context: PullRequestContext,
-  ): Promise<PriorSuccessfulReviewInfo>
-  getPRInfo(context: PullRequestContext): Promise<PRInfoObject>
-  setPullRequestReaction(
-    context: PullRequestContext,
-    reaction: ReviewReaction,
-  ): Promise<void>
-  publishReview(input: {
-    context: PullRequestContext
-    body: string
-    event: ReviewEvent
-    comments: InlineReviewComment[]
-  }): Promise<void>
-  publishFailureComment(
-    context: PullRequestContext,
-    body: string,
-  ): Promise<void>
-}
-
-type GitHubReviewPlatformDependencies = {
-  createOctokit?: () => InstallationOctokit
-}
 
 export function createGitHubReviewPlatform(
   config: Pick<AppConfig, 'githubToken' | 'githubBotLogin'>,

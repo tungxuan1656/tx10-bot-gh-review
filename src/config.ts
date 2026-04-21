@@ -2,6 +2,9 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { z } from 'zod'
+import type { AppConfig } from './types/app.js'
+
+export type { AppConfig } from './types/app.js'
 
 const logLevelSchema = z.enum([
   'fatal',
@@ -44,22 +47,6 @@ const envSchema = z.object({
   LOG_LEVEL: logLevelSchema.default('info'),
   LOG_PRETTY: logPrettySchema.default('auto'),
 })
-
-export type AppConfig = {
-  nodeEnv: 'development' | 'test' | 'production'
-  port: number
-  githubToken: string
-  githubBotLogin: string
-  githubWebhookSecret: string
-  codexBin: string
-  codexModel: string
-  codexTimeoutMs: number
-  reviewApprovedLockEnabled: boolean
-  reviewDiscussionCacheDir: string
-  reviewDiscussionCacheTtlMs: number
-  logLevel: z.infer<typeof logLevelSchema>
-  logPretty: z.infer<typeof logPrettySchema>
-}
 
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.parse(source)
