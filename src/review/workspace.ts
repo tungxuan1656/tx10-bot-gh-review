@@ -1,7 +1,6 @@
 import {
   mkdtemp,
   rm,
-  writeFile,
 } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -15,24 +14,12 @@ import type {
   ReviewWorkspaceManager,
   WorkspacePrepareOptions,
   PreparedReviewWorkspace,
-  ReviewableFile,
 } from './types.js'
+import { resolveProjectRootFrom } from './workspace-review-skills.js'
 import {
-  fetchRevision,
-  buildAuthenticatedRemoteUrl,
-  runCommand,
-} from './workspace-git.js'
-import {
-  isReviewableChangedFile,
-  maxDiffChars,
-  parseChangedFiles,
-  truncateDiff,
-} from './workspace-files.js'
-import { serializePRInfoToYaml } from './workspace-pr-info.js'
-import {
-  copyReviewSkillsToWorkspace,
-  resolveProjectRootFrom,
-} from './workspace-review-skills.js'
+  prepareWorkspaceArtifacts,
+  prepareWorkspaceRepository,
+} from './workspace-prepare.js'
 
 export type {
   AdditionalWorkspaceRevision,
@@ -40,9 +27,6 @@ export type {
   ReviewWorkspaceManager,
   WorkspacePrepareOptions,
 } from './types.js'
-
-const baseRefName = 'refs/codex-review/base'
-const headRefName = 'refs/codex-review/head'
 
 const currentFilePath = fileURLToPath(import.meta.url)
 
@@ -82,6 +66,7 @@ export function createTemporaryReviewWorkspaceManager(
         path.join(os.tmpdir(), 'codex-review-workspace-'),
       )
       const cleanup = createWorkspaceCleanup(workingDirectory)
+      const projectRoot = await resolveProjectRootFrom(currentFilePath)
 
       try {
         logger.info(
@@ -94,190 +79,37 @@ export function createTemporaryReviewWorkspaceManager(
           'Workspace prepare started',
         )
 
-        await runCommand({
-          args: ['init'],
-          bin: gitBin,
-          cwd: workingDirectory,
-          redactions: commandRedactions,
-          timeoutMs,
-        })
-
-        const baseRemoteUrl = buildAuthenticatedRemoteUrl(
-          context.baseCloneUrl,
-          input.githubToken,
-        )
-        const headRemoteUrl = buildAuthenticatedRemoteUrl(
-          context.headCloneUrl,
-          input.githubToken,
-        )
-
-        await runCommand({
-          args: ['remote', 'add', 'origin', baseRemoteUrl],
-          bin: gitBin,
-          cwd: workingDirectory,
-          redactions: commandRedactions,
-          timeoutMs,
-        })
-
-        const headRemoteName =
-          headRemoteUrl === baseRemoteUrl ? 'origin' : 'head'
-        if (headRemoteName === 'head') {
-          await runCommand({
-            args: ['remote', 'add', 'head', headRemoteUrl],
-            bin: gitBin,
-            cwd: workingDirectory,
-            redactions: commandRedactions,
+        await prepareWorkspaceRepository({
+          runtime: {
+            commandRedactions,
+            gitBin,
+            githubToken: input.githubToken,
             timeoutMs,
-          })
-        }
-
-        await fetchRevision({
-          cwd: workingDirectory,
-          fallbackRef: context.baseRef,
-          gitBin,
-          localRef: baseRefName,
-          remote: 'origin',
-          redactions: commandRedactions,
-          revision: context.baseSha,
-          timeoutMs,
-        })
-        await fetchRevision({
-          cwd: workingDirectory,
-          fallbackRef: context.headRef,
-          gitBin,
-          localRef: headRefName,
-          remote: headRemoteName,
-          redactions: commandRedactions,
-          revision: context.headSha,
-          timeoutMs,
-        })
-
-        const availableRevisionRefs = [baseRefName, headRefName]
-        for (const revision of options?.additionalRevisions ?? []) {
-          try {
-            await fetchRevision({
-              cwd: workingDirectory,
-              fallbackRef: revision.fallbackRef,
-              gitBin,
-              localRef: revision.localRef,
-              remote:
-                revision.remote === 'origin' ? 'origin' : headRemoteName,
-              redactions: commandRedactions,
-              revision: revision.revision,
-              timeoutMs,
-            })
-            availableRevisionRefs.push(revision.localRef)
-          } catch (error) {
-            logger.warn(
-              {
-                component: 'workspace',
-                error,
-                event: 'workspace.additional_revision_unavailable',
-                fallbackRef: revision.fallbackRef,
-                localRef: revision.localRef,
-                revision: revision.revision,
-                status: 'fallback',
-              },
-              'Workspace additional revision unavailable',
-            )
-          }
-        }
-
-        await runCommand({
-          args: ['checkout', '--detach', headRefName],
-          bin: gitBin,
-          cwd: workingDirectory,
-          redactions: commandRedactions,
-          timeoutMs,
-        })
-
-        await copyReviewSkillsToWorkspace({
-          projectRoot: await resolveProjectRootFrom(currentFilePath),
+          },
           workingDirectory,
         })
 
-        // Write pr-info.yaml into workspace root for Codex to read
-        const prInfoYaml = serializePRInfoToYaml(prInfo)
-        await writeFile(
-          path.join(workingDirectory, 'pr-info.yaml'),
-          prInfoYaml,
-          'utf8',
-        )
-
-        const changedFiles = parseChangedFiles(
-          await runCommand({
-            args: ['diff', '--name-status', '-z', baseRefName, headRefName],
-            bin: gitBin,
-            cwd: workingDirectory,
-            redactions: commandRedactions,
-            timeoutMs,
-          }),
-        ).filter(isReviewableChangedFile)
-
-        const reviewableFiles = (
-          await Promise.all(
-            changedFiles.map(async (file) => {
-              const patch = await runCommand({
-                args: [
-                  'diff',
-                  '--unified=5',
-                  baseRefName,
-                  headRefName,
-                  '--',
-                  file.path,
-                ],
-                bin: gitBin,
-                cwd: workingDirectory,
-                redactions: commandRedactions,
-                timeoutMs,
-              })
-
-              if (!patch.trim()) {
-                return null
-              }
-
-              const content = await runCommand({
-                args: ['show', `${headRefName}:${file.path}`],
-                bin: gitBin,
-                cwd: workingDirectory,
-                redactions: commandRedactions,
-                timeoutMs,
-              })
-
-              return {
-                content,
-                path: file.path,
-                patch,
-              } satisfies ReviewableFile
-            }),
-          )
-        ).filter((file): file is ReviewableFile => file !== null)
-
-        const rawDiff =
-          reviewableFiles.length === 0
-            ? ''
-            : await runCommand({
-                args: [
-                  'diff',
-                  '--unified=5',
-                  baseRefName,
-                  headRefName,
-                  '--',
-                  ...reviewableFiles.map((file) => file.path),
-                ],
-                bin: gitBin,
-                cwd: workingDirectory,
-                redactions: commandRedactions,
-                timeoutMs,
-              })
-
-        const diff = truncateDiff(rawDiff)
+        const { availableRevisionRefs, diff, reviewableFiles } =
+          await prepareWorkspaceArtifacts({
+            context,
+            logger,
+            options,
+            prInfo,
+            projectRoot,
+            runtime: {
+              commandRedactions,
+              gitBin,
+              githubToken: input.githubToken,
+              timeoutMs,
+            },
+            workingDirectory,
+          })
 
         logger.info(
           {
             component: 'workspace',
             diffChars: diff.length,
-            diffTruncated: rawDiff.length > maxDiffChars,
+            diffTruncated: diff.length > 0 && diff.includes('...[diff truncated]'),
             durationMs: Date.now() - startedAt,
             event: 'workspace.prepare_completed',
             reviewableFileCount: reviewableFiles.length,
