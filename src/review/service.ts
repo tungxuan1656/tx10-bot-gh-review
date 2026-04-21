@@ -1,9 +1,14 @@
 import { createChildLogger } from '../logger.js'
 import type { AppLogger } from '../types/app.js'
 import { ReviewQueueManager, type ActiveRunRef } from './review-queue.js'
-import { buildPullRequestKey, routePullRequestEvent, toPullRequestContext } from './service-helpers.js'
+import { buildPullRequestKey, toPullRequestContext } from './service-helpers.js'
 import { reviewPullRequest } from './review-execution.js'
 import { setPullRequestReaction } from './review-publishing.js'
+import {
+  isApprovedLockedByPlatform,
+  resolveRoutedEvent,
+  shouldReactToIgnoredEvent,
+} from './service-helpers-runtime.js'
 import type {
   CodexRunner,
   NormalizedPullRequestEvent,
@@ -12,8 +17,6 @@ import type {
   ReviewServiceOptions,
   ReviewWorkspaceManager,
 } from './types.js'
-
-const approvedIgnoredReason = 'approved_before'
 
 export class ReviewService {
   private readonly approvedLockedPullRequests = new Set<string>()
@@ -59,19 +62,13 @@ export class ReviewService {
     const deliveryLogger = this.createDeliveryLogger(event)
     const context = toPullRequestContext(event)
     const pullRequestKey = buildPullRequestKey(context)
-    const routedEventByAction = routePullRequestEvent({
-      actionKind: event.actionKind,
+    const routedEvent = await resolveRoutedEvent({
       botLogin: this.botLogin,
-      requestedReviewerLogin: event.requestedReviewerLogin,
+      context,
+      deliveryLogger,
+      event,
+      isApprovedLocked: this.isApprovedLocked.bind(this),
     })
-    const routedEvent =
-      routedEventByAction.status === 'trigger_review' &&
-      (await this.isApprovedLocked(context, pullRequestKey, deliveryLogger))
-        ? ({
-            status: 'ignored',
-            reason: approvedIgnoredReason,
-          } as const)
-        : routedEventByAction
 
     deliveryLogger.info(
       {
@@ -88,10 +85,11 @@ export class ReviewService {
     )
 
     if (routedEvent.status === 'ignored') {
-      if (
-        routedEvent.reason !== approvedIgnoredReason &&
-        !this.queueManager.hasPendingReviewForPullRequest(pullRequestKey)
-      ) {
+      if (shouldReactToIgnoredEvent({
+        hasPendingReviewForPullRequest:
+          this.queueManager.hasPendingReviewForPullRequest(pullRequestKey),
+        routedEvent,
+      })) {
         await setPullRequestReaction({
           context,
           deliveryLogger,
@@ -117,36 +115,14 @@ export class ReviewService {
     pullRequestKey: string,
     deliveryLogger: AppLogger,
   ): Promise<boolean> {
-    if (!this.approvedLockEnabled) {
-      return false
-    }
-
-    if (this.approvedLockedPullRequests.has(pullRequestKey)) {
-      return true
-    }
-
-    try {
-      const priorSuccessfulReview = await this.github.getPriorSuccessfulReview(
-        context,
-      )
-
-      if (priorSuccessfulReview.latestReviewState !== 'APPROVED') {
-        return false
-      }
-
-      this.approvedLockedPullRequests.add(pullRequestKey)
-      return true
-    } catch (error) {
-      deliveryLogger.warn(
-        {
-          error,
-          event: 'review.approved_lock_lookup_failed',
-          status: 'failed',
-        },
-        'Approved lock lookup failed',
-      )
-      return false
-    }
+    return isApprovedLockedByPlatform({
+      approvedLockEnabled: this.approvedLockEnabled,
+      approvedLockedPullRequests: this.approvedLockedPullRequests,
+      context,
+      deliveryLogger,
+      github: this.github,
+      pullRequestKey,
+    })
   }
 
   private createDeliveryLogger(event: NormalizedPullRequestEvent): AppLogger {

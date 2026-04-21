@@ -1,11 +1,14 @@
-import { toReviewEvent } from './decision.js'
-import { buildPullRequestKey, isInvalidInlineReviewCommentError, normalizeOptionalText, separateInlineAndOverflowFindings } from './service-helpers.js'
-import { buildReviewBody } from './summary.js'
 import type { AppLogger } from '../logger.js'
 import type { ActiveRun, ReviewQueueManager } from './review-queue.js'
 import type { ReviewPlatform } from './github-platform.js'
 import type { ReviewReaction } from './github-reactions.js'
 import type { CodexReviewSuccess, PullRequestContext, ReviewableFile } from './types.js'
+import {
+  applyApprovedLock,
+  buildReviewPublication,
+  publishReviewWithFallback,
+  resolveReviewCompletionReaction,
+} from './review-publishing-helpers.js'
 
 export async function setPullRequestReaction(input: {
   context: PullRequestContext
@@ -51,11 +54,13 @@ export async function publishSuccessfulReview(input: {
   runLogger: AppLogger
   reviewableFiles: ReviewableFile[]
 }): Promise<boolean> {
-  const reviewEvent = toReviewEvent(input.outcome.result.decision)
-  const { comments, overflowFindings } = separateInlineAndOverflowFindings(
-    input.outcome.result.findings,
-    input.reviewableFiles,
-  )
+  const { body, comments, fallbackBody, overflowFindings, reviewEvent } =
+    buildReviewPublication({
+      context: input.context,
+      deliveryId: input.deliveryId,
+      outcome: input.outcome,
+      reviewableFiles: input.reviewableFiles,
+    })
 
   input.runLogger.info(
     {
@@ -78,110 +83,37 @@ export async function publishSuccessfulReview(input: {
     return false
   }
 
-  const normalizedChangesOverview = normalizeOptionalText(
-    input.outcome.result.changesOverview,
-  )
-
-  const body = buildReviewBody({
-    headSha: input.context.headSha,
-    runToken: input.deliveryId,
-    score: input.outcome.result.score,
-    summary: input.outcome.result.summary,
-    ...(normalizedChangesOverview
-      ? { changesOverview: normalizedChangesOverview }
-      : {}),
-    event: reviewEvent,
-    overflowFindings,
-  })
-  const fallbackBody = buildReviewBody({
-    headSha: input.context.headSha,
-    runToken: input.deliveryId,
-    score: input.outcome.result.score,
-    summary: input.outcome.result.summary,
-    ...(normalizedChangesOverview
-      ? { changesOverview: normalizedChangesOverview }
-      : {}),
-    event: reviewEvent,
-    overflowFindings: input.outcome.result.findings,
+  const published = await publishReviewWithFallback({
+    body,
+    comments,
+    context: input.context,
+    fallbackBody,
+    github: input.github,
+    queueManager: input.queueManager,
+    reviewEvent,
+    run: input.run,
+    runLogger: input.runLogger,
   })
 
-  try {
-    await input.github.publishReview({
-      context: input.context,
-      body,
-      event: reviewEvent,
-      comments,
-    })
-    input.runLogger.info(
-      {
-        event: 'review.published',
-        inlineCommentCount: comments.length,
-        reviewEvent,
-        status: 'published',
-      },
-      'Review published',
-    )
-  } catch (error) {
-    if (!comments.length || !isInvalidInlineReviewCommentError(error)) {
-      throw error
-    }
-
-    input.runLogger.warn(
-      {
-        commentCount: comments.length,
-        error,
-        event: 'review.publish_fallback',
-        reason: 'invalid_inline_location',
-        status: 'retrying',
-      },
-      'Review publish fallback',
-    )
-
-    if (
-      input.queueManager.shouldStopForCancellation(
-        input.runLogger,
-        input.run,
-        'before_publish_fallback',
-      )
-    ) {
-      return false
-    }
-
-    await input.github.publishReview({
-      context: input.context,
-      body: fallbackBody,
-      event: reviewEvent,
-      comments: [],
-    })
-    input.runLogger.info(
-      {
-        event: 'review.publish_fallback',
-        fallbackMode: true,
-        reviewEvent,
-        status: 'published',
-      },
-      'Review published',
-    )
+  if (!published) {
+    return false
   }
 
   await setPullRequestReaction({
     context: input.context,
     deliveryLogger: input.runLogger,
     github: input.github,
-    reaction: reviewEvent === 'APPROVE' ? 'hooray' : 'confused',
+    reaction: resolveReviewCompletionReaction(reviewEvent),
     reason: 'review_published',
   })
 
-  if (reviewEvent === 'APPROVE' && input.approvedLockEnabled) {
-    input.approvedLockedPullRequests.add(buildPullRequestKey(input.context))
-    input.runLogger.info(
-      {
-        event: 'review.approved_locked',
-        status: 'completed',
-      },
-      'Review approved lock applied',
-    )
-  }
+  applyApprovedLock({
+    approvedLockEnabled: input.approvedLockEnabled,
+    approvedLockedPullRequests: input.approvedLockedPullRequests,
+    context: input.context,
+    reviewEvent,
+    runLogger: input.runLogger,
+  })
 
   return true
 }

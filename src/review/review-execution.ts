@@ -1,5 +1,4 @@
-import { buildFailureComment, buildReviewMarker } from './summary.js'
-import { createChildLogger } from '../logger.js'
+import { buildFailureComment } from './summary.js'
 import { persistDiscussionContext } from './discussion-cache.js'
 import {
   buildPullRequestKey,
@@ -9,28 +8,30 @@ import {
   toReviewMode,
 } from './service-helpers.js'
 import type {
-  ActiveRun,
   ReviewExecutionInput,
 } from './types.js'
-import { buildAdditionalRevisions, runReviewWorkflow } from './review-workflow.js'
+import {
+  buildRunMarker,
+  checkPublishedReviewMarker,
+  createActiveRun,
+  createReviewRunLogger,
+  executeReviewWorkflow,
+  loadReviewExecutionContext,
+  prepareWorkspaceAndDiscussion,
+} from './review-execution-helpers.js'
 
 export async function reviewPullRequest(input: ReviewExecutionInput): Promise<void> {
   const context = toPullRequestContext(input.event)
   const pullRequestKey = buildPullRequestKey(context)
   const runKey = buildRunKey(context)
-  const marker = buildReviewMarker(context.headSha, input.event.deliveryId)
+  const marker = buildRunMarker(context.headSha, input.event.deliveryId)
   const startedAt = Date.now()
-  const runLogger = createChildLogger(input.deliveryLogger, {
-    runKey,
-  })
-  const run: ActiveRun = {
-    abortController: new AbortController(),
-    cancellationLogged: false,
-    cancellationReason: null,
+  const runLogger = createReviewRunLogger(input.deliveryLogger, runKey)
+  const run = createActiveRun({
     context,
     pullRequestKey,
     runKey,
-  }
+  })
   let publishedReview = false
 
   input.activeRunRef.current = run
@@ -45,40 +46,13 @@ export async function reviewPullRequest(input: ReviewExecutionInput): Promise<vo
   )
 
   try {
-    let hasPublishedResult = false
-
-    try {
-      hasPublishedResult = await input.github.hasPublishedResult(
-        context,
-        marker,
-      )
-    } catch (error) {
-      const status = getErrorStatusCode(error)
-
-      if (status === 404) {
-        runLogger.warn(
-          {
-            error,
-            event: 'review.idempotency_checked',
-            httpStatus: status,
-            reason: 'marker_not_found',
-            status: 'completed',
-          },
-          'Review idempotency marker missing',
-        )
-      } else {
-        throw error
-      }
-    }
-
-    runLogger.info(
-      {
-        event: 'review.idempotency_checked',
-        hasPublishedResult,
-        status: 'completed',
-      },
-      'Review idempotency checked',
-    )
+    const hasPublishedResult = await checkPublishedReviewMarker({
+      context,
+      getErrorStatusCode,
+      github: input.github,
+      marker,
+      runLogger,
+    })
 
     if (hasPublishedResult) {
       runLogger.info(
@@ -102,35 +76,16 @@ export async function reviewPullRequest(input: ReviewExecutionInput): Promise<vo
       return
     }
 
-    const priorSuccessfulReview = await input.github.getPriorSuccessfulReview(
+    const {
+      prInfo,
+      priorSuccessfulReview,
+      reviewMode,
+    } = await loadReviewExecutionContext({
       context,
-    )
-    const reviewMode = toReviewMode(priorSuccessfulReview)
-
-    runLogger.info(
-      {
-        event: 'review.mode_selected',
-        hasPriorSuccessfulReview:
-          priorSuccessfulReview.hasPriorSuccessfulReview,
-        latestReviewedSha: priorSuccessfulReview.latestReviewedSha,
-        latestReviewState: priorSuccessfulReview.latestReviewState,
-        reviewMode,
-        status: 'completed',
-      },
-      'Review mode selected',
-    )
-
-    const prInfo = await input.github.getPRInfo(context)
-
-    runLogger.info(
-      {
-        commitCount: prInfo.commits.length,
-        event: 'review.pr_info_fetched',
-        fileCount: prInfo.changedFilePaths.length,
-        status: 'completed',
-      },
-      'PR info fetched',
-    )
+      github: input.github,
+      runLogger,
+      toReviewMode,
+    })
 
     if (
       input.queueManager.shouldStopForCancellation(
@@ -142,64 +97,29 @@ export async function reviewPullRequest(input: ReviewExecutionInput): Promise<vo
       return
     }
 
-    const workspace = await input.workspaceManager.prepareWorkspace(
+    const workspace = await prepareWorkspaceAndDiscussion({
       context,
+      discussionCacheOptions: input.discussionCacheOptions,
+      event: input.event,
+      github: input.github,
+      persistDiscussionContext,
       prInfo,
-      createChildLogger(runLogger, {
-        component: 'workspace',
-      }),
-      {
-        additionalRevisions: buildAdditionalRevisions({
-          currentHeadSha: context.headSha,
-          headRef: context.headRef,
-          latestReviewedSha: priorSuccessfulReview.latestReviewedSha,
-          reviewMode,
-        }),
-      },
-    )
+      priorSuccessfulReview,
+      reviewMode,
+      run,
+      runLogger,
+      shouldStopForCancellation: input.queueManager.shouldStopForCancellation.bind(
+        input.queueManager,
+      ),
+      workspaceManager: input.workspaceManager,
+    })
+
+    if (!workspace) {
+      return
+    }
 
     try {
-      runLogger.info(
-        {
-          event: 'review.workspace_prepared',
-          reviewableFileCount: workspace.reviewableFiles.length,
-          status: 'completed',
-          workingDirectory: workspace.workingDirectory,
-        },
-        'Review workspace prepared',
-      )
-
-      if (
-        input.queueManager.shouldStopForCancellation(
-          runLogger,
-          run,
-          'after_workspace_prepare',
-        )
-      ) {
-        return
-      }
-
-      const discussionMarkdown =
-        await input.github.getPullRequestDiscussionMarkdown(context)
-      await persistDiscussionContext({
-        context,
-        discussionMarkdown,
-        runLogger,
-        workingDirectory: workspace.workingDirectory,
-        options: input.discussionCacheOptions,
-      })
-
-      if (
-        input.queueManager.shouldStopForCancellation(
-          runLogger,
-          run,
-          'after_discussion_context',
-        )
-      ) {
-        return
-      }
-
-      publishedReview = await runReviewWorkflow({
+      publishedReview = await executeReviewWorkflow({
         approvedLockEnabled: input.approvedLockEnabled,
         approvedLockedPullRequests: input.approvedLockedPullRequests,
         codex: input.codex,
