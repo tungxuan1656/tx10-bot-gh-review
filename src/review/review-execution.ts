@@ -1,13 +1,4 @@
-import { determineReviewDecision } from './decision.js'
-import {
-  buildInitialReviewPhase2Prompt,
-  buildPhase1Prompt,
-  buildReReviewPrompt,
-} from './prompt.js'
-import {
-  buildFailureComment,
-  buildReviewMarker,
-} from './summary.js'
+import { buildFailureComment, buildReviewMarker } from './summary.js'
 import { createChildLogger } from '../logger.js'
 import type { AppLogger } from '../logger.js'
 import type { CodexRunner } from './codex.js'
@@ -15,20 +6,16 @@ import type { ReviewPlatform } from './github-platform.js'
 import type { NormalizedPullRequestEvent } from './webhook-event.js'
 import type { ReviewWorkspaceManager } from './workspace.js'
 import type { DiscussionCacheOptions } from './discussion-cache.js'
-import { persistDiscussionContext, reviewCommentsFileName } from './discussion-cache.js'
+import { persistDiscussionContext } from './discussion-cache.js'
 import {
-  buildDecisionMismatchReason,
   buildPullRequestKey,
   buildRunKey,
   getErrorStatusCode,
-  resolveReReviewDelta,
   toPullRequestContext,
   toReviewMode,
 } from './service-helpers.js'
 import type { ActiveRun, ActiveRunRef, ReviewQueueManager } from './review-queue.js'
-import { publishSuccessfulReview, setPullRequestReaction } from './review-publishing.js'
-
-const previousReviewedRefName = 'refs/codex-review/previous'
+import { buildAdditionalRevisions, runReviewWorkflow } from './review-workflow.js'
 
 type ReviewExecutionInput = {
   approvedLockEnabled: boolean
@@ -171,20 +158,6 @@ export async function reviewPullRequest(input: ReviewExecutionInput): Promise<vo
       return
     }
 
-    const additionalRevisions =
-      reviewMode === 're_review' &&
-      priorSuccessfulReview.latestReviewedSha &&
-      priorSuccessfulReview.latestReviewedSha !== context.headSha
-        ? [
-            {
-              revision: priorSuccessfulReview.latestReviewedSha,
-              fallbackRef: context.headRef,
-              localRef: previousReviewedRefName,
-              remote: 'head' as const,
-            },
-          ]
-        : []
-
     const workspace = await input.workspaceManager.prepareWorkspace(
       context,
       prInfo,
@@ -192,7 +165,12 @@ export async function reviewPullRequest(input: ReviewExecutionInput): Promise<vo
         component: 'workspace',
       }),
       {
-        additionalRevisions,
+        additionalRevisions: buildAdditionalRevisions({
+          currentHeadSha: context.headSha,
+          headRef: context.headRef,
+          latestReviewedSha: priorSuccessfulReview.latestReviewedSha,
+          reviewMode,
+        }),
       },
     )
 
@@ -217,34 +195,6 @@ export async function reviewPullRequest(input: ReviewExecutionInput): Promise<vo
         return
       }
 
-      if (workspace.reviewableFiles.length === 0) {
-        runLogger.info(
-          {
-            event: 'review.completed',
-            reason: 'no_reviewable_files',
-            status: 'ignored',
-          },
-          'Review completed',
-        )
-
-        await setPullRequestReaction({
-          context,
-          deliveryLogger: runLogger,
-          github: input.github,
-          reaction: 'laugh',
-          reason: 'no_reviewable_files',
-        })
-        return
-      }
-
-      await setPullRequestReaction({
-        context,
-        deliveryLogger: runLogger,
-        github: input.github,
-        reaction: 'eyes',
-        reason: 'review_started',
-      })
-
       const discussionMarkdown =
         await input.github.getPullRequestDiscussionMarkdown(context)
       await persistDiscussionContext({
@@ -265,194 +215,20 @@ export async function reviewPullRequest(input: ReviewExecutionInput): Promise<vo
         return
       }
 
-      const reviewablePaths = workspace.reviewableFiles.map((file) => file.path)
-
-      const outcome =
-        reviewMode === 'initial_review'
-          ? await (() => {
-              const phase1Prompt = buildPhase1Prompt({
-                owner: context.owner,
-                repo: context.repo,
-                pullNumber: context.pullNumber,
-                title: context.title,
-                headSha: context.headSha,
-                prInfoFilePath: 'pr-info.yaml',
-              })
-
-              runLogger.info(
-                {
-                  event: 'review.prompts_built',
-                  phase1PromptChars: phase1Prompt.length,
-                  reviewMode,
-                  reviewableFileCount: workspace.reviewableFiles.length,
-                  status: 'completed',
-                },
-                'Review prompts built',
-              )
-
-              return input.codex.reviewTwoPhase(
-                {
-                  abortSignal: run.abortController.signal,
-                  phase1Prompt,
-                  phase2Prompt: (phase1Summary) =>
-                    buildInitialReviewPhase2Prompt({
-                      owner: context.owner,
-                      repo: context.repo,
-                      pullNumber: context.pullNumber,
-                      title: context.title,
-                      headSha: context.headSha,
-                      phase1Summary,
-                      discussionFilePath: reviewCommentsFileName,
-                      reviewablePaths,
-                    }),
-                  workingDirectory: workspace.workingDirectory,
-                },
-                createChildLogger(runLogger, {
-                  component: 'codex',
-                }),
-              )
-            })()
-          : await (() => {
-              const delta = resolveReReviewDelta({
-                latestReviewedSha: priorSuccessfulReview.latestReviewedSha,
-                currentHeadSha: context.headSha,
-                availableRevisionRefs: workspace.availableRevisionRefs,
-              })
-
-              const prompt = buildReReviewPrompt({
-                owner: context.owner,
-                repo: context.repo,
-                pullNumber: context.pullNumber,
-                title: context.title,
-                headSha: context.headSha,
-                discussionFilePath: reviewCommentsFileName,
-                reviewablePaths,
-                deltaFromRef: delta.deltaFromRef,
-                deltaToRef: delta.deltaToRef,
-                deltaFromSha: priorSuccessfulReview.latestReviewedSha,
-                fallbackReason: delta.fallbackReason,
-              })
-
-              runLogger.info(
-                {
-                  deltaFromRef: delta.deltaFromRef,
-                  deltaToRef: delta.deltaToRef,
-                  event: 'review.prompts_built',
-                  fallbackReason: delta.fallbackReason,
-                  promptChars: prompt.length,
-                  reviewMode,
-                  reviewableFileCount: workspace.reviewableFiles.length,
-                  status: 'completed',
-                },
-                'Review prompts built',
-              )
-
-              return input.codex.review(
-                {
-                  abortSignal: run.abortController.signal,
-                  prompt,
-                  workingDirectory: workspace.workingDirectory,
-                },
-                createChildLogger(runLogger, {
-                  component: 'codex',
-                }),
-              )
-            })()
-
-      if (!outcome.ok) {
-        if (
-          outcome.cancelled ||
-          input.queueManager.shouldStopForCancellation(
-            runLogger,
-            run,
-            'after_codex',
-          )
-        ) {
-          return
-        }
-
-        runLogger.warn(
-          {
-            event: 'review.codex_failed',
-            reason: outcome.reason,
-            status: 'failed',
-          },
-          'Review Codex step failed',
-        )
-
-        await input.github.publishFailureComment(
-          context,
-          buildFailureComment({
-            headSha: context.headSha,
-            runToken: input.event.deliveryId,
-            reason: outcome.reason,
-          }),
-        )
-        return
-      }
-
-      runLogger.info(
-        {
-          decision: outcome.result.decision,
-          event: 'review.codex_completed',
-          findingCount: outcome.result.findings.length,
-          score: outcome.result.score,
-          status: 'completed',
-        },
-        'Review Codex step completed',
-      )
-
-      if (
-        input.queueManager.shouldStopForCancellation(
-          runLogger,
-          run,
-          'after_codex',
-        )
-      ) {
-        return
-      }
-
-      const expectedDecision = determineReviewDecision(outcome.result.findings)
-      if (outcome.result.decision !== expectedDecision) {
-        const reason = buildDecisionMismatchReason({
-          actualDecision: outcome.result.decision,
-          expectedDecision,
-        })
-
-        runLogger.warn(
-          {
-            actualDecision: outcome.result.decision,
-            event: 'review.codex_contract_mismatch',
-            expectedDecision,
-            status: 'failed',
-          },
-          'Review Codex contract mismatch',
-        )
-
-        await input.github.publishFailureComment(
-          context,
-          buildFailureComment({
-            headSha: context.headSha,
-            runToken: input.event.deliveryId,
-            reason,
-          }),
-        )
-        return
-      }
-
-      publishedReview = await publishSuccessfulReview({
+      publishedReview = await runReviewWorkflow({
         approvedLockEnabled: input.approvedLockEnabled,
         approvedLockedPullRequests: input.approvedLockedPullRequests,
+        codex: input.codex,
         context,
         deliveryId: input.event.deliveryId,
         github: input.github,
-        outcome,
+        priorSuccessfulReview,
         queueManager: input.queueManager,
+        reviewMode,
         run,
         runLogger,
-        reviewableFiles: workspace.reviewableFiles,
+        workspace,
       })
-
     } finally {
       await workspace.cleanup()
     }
