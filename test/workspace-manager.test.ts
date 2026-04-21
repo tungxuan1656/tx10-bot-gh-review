@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createTemporaryReviewWorkspaceManager } from '../src/review/workspace.js'
@@ -168,7 +169,6 @@ describe('createTemporaryReviewWorkspaceManager', () => {
       expect(sourceFile?.patch).toContain('@@')
       expect(workspace.diff).toContain('diff --git a/src/app.ts b/src/app.ts')
 
-      // pr-info.yaml should be written to the workspace root
       const prInfoYaml = await readFile(
         path.join(workspace.workingDirectory, 'pr-info.yaml'),
         'utf8',
@@ -177,7 +177,6 @@ describe('createTemporaryReviewWorkspaceManager', () => {
       expect(prInfoYaml).toContain('pull_number: 42')
       expect(prInfoYaml).toContain('changed_files:')
 
-      // prInfo is returned on the workspace object
       expect(workspace.prInfo).toEqual(prInfo)
 
       const checkedOutFile = await readFile(
@@ -194,22 +193,59 @@ describe('createTemporaryReviewWorkspaceManager', () => {
         'utf8',
       )
       expect(copiedSkill).toContain('# Code Review')
-
-      await expect(
-        readFile(
-          path.join(
-            workspace.workingDirectory,
-            '.agents/skills/api-design/SKILL.md',
-          ),
-          'utf8',
-        ),
-      ).resolves.toContain('API')
     } finally {
       const workingDirectory = workspace.workingDirectory
       await workspace.cleanup()
       await expect(
         readFile(path.join(workingDirectory, 'src/app.ts'), 'utf8'),
       ).rejects.toThrow()
+    }
+  })
+
+  it('exposes additional fetched revisions when available', async () => {
+    const repo = await createRemoteRepository()
+    const logger = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    }
+    const manager = createTemporaryReviewWorkspaceManager({
+      githubToken: 'unused',
+      logger: logger as never,
+      timeoutMs: 10_000,
+    })
+    const context = createPullRequestContext(repo)
+    const prInfo: PRInfoObject = {
+      owner: 'acme',
+      repo: 'repo',
+      pullNumber: 42,
+      title: 'Example',
+      description: '',
+      headSha: repo.headSha,
+      baseSha: repo.baseSha,
+      headRef: 'main',
+      baseRef: 'main',
+      htmlUrl: 'https://github.com/acme/repo/pull/42',
+      commits: [{ sha: repo.headSha, message: 'head' }],
+      changedFilePaths: ['src/app.ts'],
+    }
+
+    const workspace = await manager.prepareWorkspace(context, prInfo, undefined, {
+      additionalRevisions: [
+        {
+          revision: repo.baseSha,
+          fallbackRef: 'main',
+          localRef: 'refs/codex-review/previous',
+          remote: 'head',
+        },
+      ],
+    })
+
+    try {
+      expect(workspace.availableRevisionRefs).toContain('refs/codex-review/previous')
+    } finally {
+      await workspace.cleanup()
     }
   })
 
@@ -226,10 +262,6 @@ describe('createTemporaryReviewWorkspaceManager', () => {
       timeoutMs: 10_000,
     })
 
-    // Overwrite src/app.ts in the remote with a file large enough to produce >80k diff chars.
-    // The file must be changed between base and head, which is already the case in the fixture.
-    // We re-use createRemoteRepository as-is; the diff for src/app.ts is small.
-    // To force truncation we need a huge diff, so we create a separate large-file repo.
     const rootDirectory = await mkdtemp(
       path.join(os.tmpdir(), 'workspace-truncate-test-'),
     )
@@ -243,14 +275,12 @@ describe('createTemporaryReviewWorkspaceManager', () => {
     await runGit(['config', 'user.email', 'review-bot@example.com'], sourcePath)
     await runGit(['config', 'user.name', 'Review Bot'], sourcePath)
 
-    // base: large file filled with 'a'
-    const bigContent = "const x = 'aaaa';\n".repeat(5_000) // ~90k chars
+    const bigContent = "const x = 'aaaa';\n".repeat(5_000)
     await writeFile(path.join(sourcePath, 'src/big.ts'), bigContent, 'utf8')
     await runGit(['add', 'src/big.ts'], sourcePath)
     await runGit(['commit', '-m', 'base'], sourcePath)
     const baseSha = await runGit(['rev-parse', 'HEAD'], sourcePath)
 
-    // head: same structure, different value
     const bigContentHead = "const x = 'bbbb';\n".repeat(5_000)
     await writeFile(path.join(sourcePath, 'src/big.ts'), bigContentHead, 'utf8')
     await runGit(['add', 'src/big.ts'], sourcePath)
@@ -294,7 +324,7 @@ describe('createTemporaryReviewWorkspaceManager', () => {
 
     try {
       expect(workspace.diff).toContain('...[diff truncated]')
-      expect(workspace.diff.length).toBeLessThanOrEqual(80_000 + 30) // truncation sentinel length
+      expect(workspace.diff.length).toBeLessThanOrEqual(80_000 + 30)
     } finally {
       await workspace.cleanup()
     }

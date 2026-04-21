@@ -729,4 +729,67 @@ describe('ReviewService', () => {
       'confused',
     )
   })
+
+  it('falls back to a top-level review when inline comment locations are invalid', async () => {
+    const github = createGitHubPlatform({
+      publishReview: vi
+        .fn()
+        .mockRejectedValueOnce({
+          status: 422,
+          message: 'Validation Failed: review comments is invalid',
+        })
+        .mockResolvedValueOnce(undefined),
+      getPriorSuccessfulReview: vi.fn().mockResolvedValue(
+        createPriorReviewInfo({
+          hasPriorSuccessfulReview: true,
+          latestReviewedSha: 'sha-prev',
+          latestReviewState: 'CHANGES_REQUESTED',
+        }),
+      ),
+    })
+    const workspace = createWorkspaceManager()
+    const review = vi.fn().mockResolvedValue({
+      ok: true,
+      result: createReviewResult({
+        findings: [
+          {
+            severity: 'minor',
+            path: 'src/app.ts',
+            line: 1,
+            title: 'Invalid line',
+            comment: 'This should not be renderable inline.',
+          },
+        ],
+      }),
+    })
+
+    const codex = makeCodexRunner({
+      review: review as unknown as CodexRunner['review'],
+    })
+
+    const service = new ReviewService(
+      github.platform,
+      codex,
+      workspace.manager,
+      createLoggerStub(),
+      'review-bot',
+      {
+        approvedLockEnabled: false,
+      },
+    )
+
+    await service.handlePullRequestEvent(
+      createPullRequestEvent({ deliveryId: 'delivery-inline-fallback' }),
+    )
+
+    expect(github.mocks.publishReview).toHaveBeenCalledTimes(2)
+    const firstPublish = vi.mocked(github.mocks.publishReview).mock.calls[0]?.[0]
+    const secondPublish =
+      vi.mocked(github.mocks.publishReview).mock.calls[1]?.[0]
+
+    expect(firstPublish?.comments).toHaveLength(1)
+    expect(secondPublish?.comments).toHaveLength(0)
+    expect(secondPublish?.body).toContain('Additional findings')
+  })
+
 })

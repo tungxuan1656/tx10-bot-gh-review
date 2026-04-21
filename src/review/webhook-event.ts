@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import type { NormalizedPullRequestEvent, PullRequestActionKind } from './types.js'
+
+export type { NormalizedPullRequestEvent, PullRequestActionKind } from './types.js'
 
 export const trackedPullRequestActionKinds = [
   'review_requested',
@@ -6,33 +9,6 @@ export const trackedPullRequestActionKinds = [
   'synchronize',
   'other_pull_request_action',
 ] as const
-
-export type PullRequestActionKind =
-  (typeof trackedPullRequestActionKinds)[number]
-
-export type NormalizedPullRequestEvent = {
-  deliveryId: string
-  eventName: 'pull_request'
-  action: string
-  actionKind: PullRequestActionKind
-  owner: string
-  repo: string
-  pullNumber: number
-  title: string
-  htmlUrl: string
-  headSha: string
-  headRef: string
-  headCloneUrl: string
-  baseSha: string
-  baseRef: string
-  baseCloneUrl: string
-  senderLogin: string | null
-  requestedReviewerLogin: string | null
-  requestedReviewerLogins: string[]
-  botStillRequested: boolean | null
-  beforeSha: string | null
-  afterSha: string | null
-}
 
 const pullRequestWebhookPayloadSchema = z.object({
   action: z.string().min(1),

@@ -577,4 +577,116 @@ describe('createGitHubReviewPlatform', () => {
       repo: 'repo',
     })
   })
+
+  it('publishes a review through the GitHub review API', async () => {
+    const createReview = vi.fn().mockResolvedValue(undefined)
+    const platform = createGitHubReviewPlatform(
+      {
+        githubToken: 'ghp_test_token',
+        githubBotLogin: 'review-bot',
+      },
+      {
+        createOctokit: () =>
+          ({
+            paginate: vi.fn().mockResolvedValue([]),
+            rest: {
+              reactions: {
+                createForIssue: vi.fn(),
+                deleteForIssue: vi.fn(),
+                listForIssue: vi.fn(),
+              },
+              pulls: {
+                listFiles: vi.fn(),
+                listReviewComments: vi.fn(),
+                listReviews: vi.fn(),
+                createReview,
+              },
+              issues: {
+                listComments: vi.fn(),
+                createComment: vi.fn(),
+              },
+              repos: {
+                getContent: vi.fn(),
+              },
+            },
+          }) as never,
+      },
+    )
+
+    await platform.publishReview({
+      context: createPullRequestContext(),
+      body: 'Looks good.',
+      event: 'APPROVE',
+      comments: [
+        {
+          body: 'Nice work.',
+          path: 'src/app.ts',
+          line: 12,
+          side: 'RIGHT',
+        },
+      ],
+    })
+
+    expect(createReview).toHaveBeenCalledWith({
+      body: 'Looks good.',
+      comments: [
+        {
+          body: 'Nice work.',
+          line: 12,
+          path: 'src/app.ts',
+          side: 'RIGHT',
+        },
+      ],
+      commit_id: 'abc123',
+      event: 'APPROVE',
+      owner: 'acme',
+      pull_number: 42,
+      repo: 'repo',
+    })
+  })
+
+  it('publishes a failure comment through the issues API', async () => {
+    const createComment = vi.fn().mockResolvedValue(undefined)
+    const platform = createGitHubReviewPlatform(
+      {
+        githubToken: 'ghp_test_token',
+        githubBotLogin: 'review-bot',
+      },
+      {
+        createOctokit: () =>
+          ({
+            paginate: vi.fn().mockResolvedValue([]),
+            rest: {
+              reactions: {
+                createForIssue: vi.fn(),
+                deleteForIssue: vi.fn(),
+                listForIssue: vi.fn(),
+              },
+              pulls: {
+                listFiles: vi.fn(),
+                listReviewComments: vi.fn(),
+                listReviews: vi.fn(),
+                createReview: vi.fn(),
+              },
+              issues: {
+                listComments: vi.fn(),
+                createComment,
+              },
+              repos: {
+                getContent: vi.fn(),
+              },
+            },
+          }) as never,
+      },
+    )
+
+    await platform.publishFailureComment(createPullRequestContext(), 'Boom')
+
+    expect(createComment).toHaveBeenCalledWith({
+      body: 'Boom',
+      issue_number: 42,
+      owner: 'acme',
+      repo: 'repo',
+    })
+  })
 })

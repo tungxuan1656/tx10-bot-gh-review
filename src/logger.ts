@@ -1,9 +1,6 @@
 import pino from 'pino'
 
-import type { AppConfig } from './config.js'
-
-type LogBindings = Record<string, unknown>
-type LogMethod = (object: object, message?: string) => void
+import type { AppConfig, AppLogger, LogBindings, LogMethod } from './types/app.js'
 
 function shouldUsePrettyLogs(
   config: Pick<AppConfig, 'logPretty' | 'nodeEnv'>,
@@ -45,7 +42,7 @@ export function createLogger(
   })
 }
 
-export type AppLogger = ReturnType<typeof createLogger>
+export type { AppLogger } from './types/app.js'
 
 function isObject(value: unknown): value is LogBindings {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -71,10 +68,10 @@ export function createChildLogger(
 
   const fallbackLogger = {
     ...logger,
-    debug: bindLogMethod(logger.debug.bind(logger) as LogMethod, bindings),
-    error: bindLogMethod(logger.error.bind(logger) as LogMethod, bindings),
-    info: bindLogMethod(logger.info.bind(logger) as LogMethod, bindings),
-    warn: bindLogMethod(logger.warn.bind(logger) as LogMethod, bindings),
+    debug: bindLogMethod(logger.debug.bind(logger), bindings),
+    error: bindLogMethod(logger.error.bind(logger), bindings),
+    info: bindLogMethod(logger.info.bind(logger), bindings),
+    warn: bindLogMethod(logger.warn.bind(logger), bindings),
   } as unknown as AppLogger
 
   ;(

@@ -1,131 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-import { spawn } from 'node:child_process'
-
 import { reviewResultSchema } from './types.js'
-import type { AppLogger } from '../logger.js'
-import type { CodexReviewOutcome } from './types.js'
+import type { AppLogger } from '../types/app.js'
+import type { CodexReviewOutcome, CodexRunner } from './types.js'
+import { runCodexPhase } from './codex-process.js'
 
-const maxLoggedOutputCharacters = 2_000
-const maxLoggedOutputTailCharacters = 1_000
-
-const codexOutputJsonSchema = {
-  type: 'object',
-  properties: {
-    summary: {
-      type: 'string',
-      minLength: 1,
-    },
-    changesOverview: {
-      type: 'string',
-    },
-    score: {
-      type: 'number',
-      minimum: 0,
-      maximum: 10,
-    },
-    decision: {
-      type: 'string',
-      enum: ['approve', 'request_changes'],
-    },
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          severity: {
-            type: 'string',
-            enum: ['critical', 'major', 'minor', 'improvement'],
-          },
-          path: {
-            type: 'string',
-            minLength: 1,
-          },
-          line: {
-            type: 'integer',
-            minimum: 1,
-          },
-          title: {
-            type: 'string',
-            minLength: 1,
-          },
-          comment: {
-            type: 'string',
-            minLength: 1,
-          },
-        },
-        required: ['severity', 'path', 'line', 'title', 'comment'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['summary', 'changesOverview', 'score', 'decision', 'findings'],
-  additionalProperties: false,
-} as const
-
-/**
- * Strip optional markdown code fences that some models emit around JSON output
- * even when instructed not to (e.g. ```json ... ``` or ``` ... ```).
- */
-function stripJsonFences(text: string): string {
-  const trimmed = text.trim()
-  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/i.exec(trimmed)
-  return fenced?.[1]?.trim() ?? trimmed
-}
-
-function detectFailureHint(stderr: string): string | undefined {
-  const lower = stderr.toLowerCase()
-
-  if (
-    lower.includes('context length') ||
-    lower.includes('maximum context') ||
-    lower.includes('too many tokens') ||
-    lower.includes('input is too long') ||
-    lower.includes('prompt is too long')
-  ) {
-    return 'possible_prompt_too_large'
-  }
-
-  if (lower.includes('rate limit') || lower.includes('429')) {
-    return 'possible_rate_limited'
-  }
-
-  if (
-    lower.includes('unauthorized') ||
-    lower.includes('forbidden') ||
-    lower.includes('authentication')
-  ) {
-    return 'possible_auth_error'
-  }
-
-  if (lower.includes('not found') || lower.includes('no such file')) {
-    return 'possible_missing_resource'
-  }
-
-  return undefined
-}
-
-export type CodexRunner = {
-  review(
-    input: {
-      prompt: string
-      workingDirectory: string
-      abortSignal?: AbortSignal
-    },
-    logger?: AppLogger,
-  ): Promise<CodexReviewOutcome>
-
-  reviewTwoPhase(
-    input: {
-      phase1Prompt: string
-      phase2Prompt: (phase1Output: string) => string
-      workingDirectory: string
-      abortSignal?: AbortSignal
-    },
-    logger?: AppLogger,
-  ): Promise<CodexReviewOutcome>
-}
+export type { CodexRunner } from './types.js'
 
 export function createCodexRunner(input: {
   bin: string
@@ -134,274 +12,6 @@ export function createCodexRunner(input: {
   timeoutMs?: number
 }): CodexRunner {
   const timeoutMs = input.timeoutMs ?? 900_000
-
-  function summarizeOutput(text: string): string | undefined {
-    const trimmed = text.trim()
-
-    if (trimmed.length === 0) {
-      return undefined
-    }
-
-    if (trimmed.length <= maxLoggedOutputCharacters) {
-      return trimmed
-    }
-
-    return `${trimmed.slice(0, maxLoggedOutputCharacters)}...[truncated]`
-  }
-
-  function summarizeOutputTail(text: string): string | undefined {
-    const trimmed = text.trim()
-
-    if (trimmed.length === 0) {
-      return undefined
-    }
-
-    if (trimmed.length <= maxLoggedOutputTailCharacters) {
-      return trimmed
-    }
-
-    return `...[truncated]${trimmed.slice(-maxLoggedOutputTailCharacters)}`
-  }
-
-  /**
-   * Run a single Codex invocation.
-   * @param validateJson - if true, validates result against reviewResultSchema.
-   *                       if false, returns raw text output as the "result" string.
-   */
-  async function runCodexPhase(phaseInput: {
-    prompt: string
-    workingDirectory: string
-    abortSignal: AbortSignal | undefined
-    validateJson: boolean
-    phaseLabel: string
-    logger: AppLogger
-  }): Promise<
-    | { ok: true; output: string }
-    | { ok: false; reason: string; cancelled?: boolean }
-  > {
-    if (phaseInput.abortSignal?.aborted) {
-      return { ok: false, reason: 'Codex review canceled.', cancelled: true }
-    }
-
-    const startedAt = Date.now()
-    const tempDirectory = await mkdtemp(path.join(os.tmpdir(), 'codex-review-'))
-
-    try {
-      const outputPath = path.join(tempDirectory, 'result.json')
-      const outputSchemaPath = path.join(
-        tempDirectory,
-        'codex-output-schema.json',
-      )
-
-      if (phaseInput.validateJson) {
-        await writeFile(
-          outputSchemaPath,
-          JSON.stringify(codexOutputJsonSchema, null, 2),
-          'utf8',
-        )
-      }
-
-      const args = [
-        'exec',
-        '--cd',
-        phaseInput.workingDirectory,
-        ...(input.model ? ['--model', input.model] : []),
-        '--sandbox',
-        'workspace-write',
-        '--skip-git-repo-check',
-        ...(phaseInput.validateJson
-          ? ['--output-schema', outputSchemaPath]
-          : []),
-        '--output-last-message',
-        outputPath,
-        '-',
-      ]
-
-      phaseInput.logger.debug(
-        {
-          component: 'codex',
-          event: 'codex.phase_started',
-          phase: phaseInput.phaseLabel,
-          promptChars: phaseInput.prompt.length,
-          status: 'started',
-          validateJson: phaseInput.validateJson,
-          model: input.model,
-          workingDirectory: phaseInput.workingDirectory,
-        },
-        'Codex phase started',
-      )
-
-      const child = spawn(input.bin, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: process.env,
-      })
-
-      const stdoutChunks: Buffer[] = []
-      const stderrChunks: Buffer[] = []
-      let cancelled = false
-      let abortListener: (() => void) | undefined
-      let stdinWriteError: unknown
-
-      const killChildProcess = () => {
-        if (child.exitCode !== null) return
-        cancelled = true
-        child.kill('SIGTERM')
-        const forceKillTimeout = setTimeout(() => {
-          if (child.exitCode === null) child.kill('SIGKILL')
-        }, 2_000)
-        forceKillTimeout.unref()
-      }
-
-      if (phaseInput.abortSignal) {
-        abortListener = () => killChildProcess()
-        phaseInput.abortSignal.addEventListener('abort', abortListener, {
-          once: true,
-        })
-        if (phaseInput.abortSignal.aborted) killChildProcess()
-      }
-
-      child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk))
-      child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk))
-      child.stdin.on('error', (error: unknown) => {
-        stdinWriteError = error
-      })
-      try {
-        child.stdin.end(phaseInput.prompt)
-      } catch (error) {
-        stdinWriteError = error
-      }
-
-      let timedOut = false
-      const timeout = setTimeout(() => {
-        timedOut = true
-        killChildProcess()
-      }, timeoutMs)
-
-      const exitCode = await new Promise<number | null>((resolve, reject) => {
-        child.once('error', reject)
-        child.once('close', resolve)
-      }).finally(() => {
-        clearTimeout(timeout)
-        if (phaseInput.abortSignal && abortListener) {
-          phaseInput.abortSignal.removeEventListener('abort', abortListener)
-        }
-      })
-
-      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim()
-      const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim()
-
-      if (stdinWriteError && !timedOut && !cancelled) {
-        const message =
-          stdinWriteError instanceof Error
-            ? stdinWriteError.message
-            : typeof stdinWriteError === 'string'
-              ? stdinWriteError
-              : (() => {
-                  try {
-                    return (
-                      JSON.stringify(stdinWriteError) ??
-                      'Unknown stdin write error'
-                    )
-                  } catch {
-                    return 'Unknown stdin write error'
-                  }
-                })()
-
-        phaseInput.logger.warn(
-          {
-            component: 'codex',
-            durationMs: Date.now() - startedAt,
-            event: 'codex.stdin_write_failed',
-            phase: phaseInput.phaseLabel,
-            reason: 'stdin_write_failed',
-            message,
-            status: 'failed',
-          },
-          'Codex stdin write failed',
-        )
-      }
-
-      if (timedOut) {
-        phaseInput.logger.error(
-          {
-            component: 'codex',
-            durationMs: Date.now() - startedAt,
-            event: 'codex.failed',
-            phase: phaseInput.phaseLabel,
-            reason: 'timeout',
-            stderrPreview: summarizeOutput(stderr),
-            stdoutPreview: summarizeOutput(stdout),
-            stderrBytes: Buffer.byteLength(stderr, 'utf8'),
-            stdoutBytes: Buffer.byteLength(stdout, 'utf8'),
-            status: 'failed',
-            timeoutMs,
-          },
-          'Codex review failed',
-        )
-        return { ok: false, reason: `Codex timed out after ${timeoutMs}ms.` }
-      }
-
-      if (cancelled) {
-        phaseInput.logger.info(
-          {
-            component: 'codex',
-            durationMs: Date.now() - startedAt,
-            event: 'codex.canceled',
-            phase: phaseInput.phaseLabel,
-            status: 'canceled',
-          },
-          'Codex review canceled',
-        )
-        return { ok: false, reason: 'Codex review canceled.', cancelled: true }
-      }
-
-      if (exitCode !== 0) {
-        const failureHint = detectFailureHint(stderr)
-
-        phaseInput.logger.warn(
-          {
-            component: 'codex',
-            event: 'codex.failed',
-            exitCode,
-            durationMs: Date.now() - startedAt,
-            failureHint,
-            phase: phaseInput.phaseLabel,
-            promptChars: phaseInput.prompt.length,
-            reason: 'non_zero_exit',
-            stderrPreview: summarizeOutput(stderr),
-            stderrTailPreview: summarizeOutputTail(stderr),
-            stdoutPreview: summarizeOutput(stdout),
-            stdoutTailPreview: summarizeOutputTail(stdout),
-            stderrBytes: Buffer.byteLength(stderr, 'utf8'),
-            stdoutBytes: Buffer.byteLength(stdout, 'utf8'),
-            status: 'failed',
-          },
-          'Codex review failed',
-        )
-        return { ok: false, reason: 'Codex returned a non-zero exit code.' }
-      }
-
-      const rawOutput = stripJsonFences(
-        await readFile(outputPath, 'utf8').catch(() => stdout),
-      )
-
-      phaseInput.logger.info(
-        {
-          component: 'codex',
-          durationMs: Date.now() - startedAt,
-          event: 'codex.phase_completed',
-          outputChars: rawOutput.length,
-          phase: phaseInput.phaseLabel,
-          status: 'completed',
-        },
-        'Codex phase completed',
-      )
-
-      return { ok: true, output: rawOutput }
-    } finally {
-      await rm(tempDirectory, { recursive: true, force: true })
-    }
-  }
 
   return {
     async review(
@@ -434,12 +44,15 @@ export function createCodexRunner(input: {
 
       try {
         const phaseResult = await runCodexPhase({
+          bin: input.bin,
           prompt: reviewInput.prompt,
           workingDirectory: reviewInput.workingDirectory,
           abortSignal: reviewInput.abortSignal,
           validateJson: true,
           phaseLabel: 'single',
           logger,
+          model: input.model,
+          timeoutMs,
         })
 
         if (!phaseResult.ok) {
@@ -532,12 +145,15 @@ export function createCodexRunner(input: {
 
       try {
         const phase1Result = await runCodexPhase({
+          bin: input.bin,
           prompt: chainedInput.phase1Prompt,
           workingDirectory: chainedInput.workingDirectory,
           abortSignal: chainedInput.abortSignal,
           validateJson: false,
           phaseLabel: 'phase1',
           logger,
+          model: input.model,
+          timeoutMs,
         })
 
         if (!phase1Result.ok) {
@@ -545,12 +161,15 @@ export function createCodexRunner(input: {
         }
 
         const phase2Result = await runCodexPhase({
+          bin: input.bin,
           prompt: chainedInput.phase2Prompt(phase1Result.output),
           workingDirectory: chainedInput.workingDirectory,
           abortSignal: chainedInput.abortSignal,
           validateJson: true,
           phaseLabel: 'phase2',
           logger,
+          model: input.model,
+          timeoutMs,
         })
 
         if (!phase2Result.ok) {
