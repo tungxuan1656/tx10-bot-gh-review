@@ -4,6 +4,13 @@ const maxLoggedOutputTailCharacters = 1_000
 export const codexOutputJsonSchema = {
   type: 'object',
   properties: {
+    reviewStatus: {
+      type: 'string',
+      enum: ['complete', 'incomplete', 'blocked'],
+    },
+    incompleteReason: {
+      type: 'string',
+    },
     summary: {
       type: 'string',
       minLength: 1,
@@ -51,7 +58,7 @@ export const codexOutputJsonSchema = {
       },
     },
   },
-  required: ['summary', 'changesOverview', 'score', 'decision', 'findings'],
+  required: ['reviewStatus', 'incompleteReason', 'summary', 'changesOverview', 'score', 'decision', 'findings'],
   additionalProperties: false,
 } as const
 

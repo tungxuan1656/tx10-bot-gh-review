@@ -18,7 +18,7 @@ flowchart LR
 - **Review service** routes every normalized `pull_request` action to one of three outcomes: `trigger_review`, `ignored`, or `cancel_requested`. It enqueues all work into a single in-process global FIFO queue shared across repositories, triggers reviews only for `review_requested` (bot requested), ignores `synchronize`, and supports best-effort cancellation.
 - **GitHub review platform** authenticates with the machine-user token, checks idempotency markers, and submits reviews or fallback comments.
 - **Temporary workspace manager** creates a temporary git directory, fetches the exact `baseSha` and `headSha` with ancestry for merge-base comparison, checks out the PR head, replaces the PR-owned `.agents` tree with trusted `resources/review-skills/*` in `.agents/skills`, and prepares deterministic refs (`refs/codex-review/base` and `refs/codex-review/head`) for in-workspace git inspection.
-- **Codex runner** shells out to `codex exec --cd <workspace> --sandbox read-only` with a JSON Schema file so the final response is machine-validated before any GitHub action is taken, and supports hard process cancellation for explicit cancellation requests.
+- **Codex runner** shells out to `codex exec --json --cd <workspace> --sandbox read-only` with a JSON Schema file, validates completion metadata and JSONL runtime events, and compares the model tool's full diff output with an independent read-only Git diff before allowing publication. It supports hard process cancellation for explicit cancellation requests.
 
 ## Sequence Diagram
 
@@ -37,6 +37,7 @@ sequenceDiagram
   Bot->>Bot: Copy bundled review skills into temp workspace
   Bot->>Codex: Submit repo-first prompt (Codex reads git diff and files in workspace)
   Codex-->>Bot: Structured JSON review result
+  Bot->>Bot: Verify completed turn, successful full diff inspection and reviewStatus
   Bot->>Bot: Validate decision against findings and map to REQUEST_CHANGES / APPROVE
   Bot->>GitHub: Submit review or fallback comment
 ```
@@ -55,7 +56,7 @@ sequenceDiagram
 - Initial review and full-PR fallback use `base...head` (merge-base to head), matching GitHub PR diff semantics; re-review deltas compare previous reviewed SHA to current head directly.
 - GitHub authentication is supplied through fetch-only environment configuration, never remote URLs stored in `.git/config`. Codex receives only runtime/authentication/proxy environment keys, not service secrets; model shell commands inherit only core runtime variables (`PATH`, `HOME`, `TMPDIR`) and never secret-shaped variables.
 - Bot-owned metadata paths are replaced without following PR symlinks before writing. Workspace cleanup also covers discussion fetch/persistence failures.
-- Codex output is trusted only after JSON Schema validation.
+- Codex output is eligible for publication only after schema validation, `reviewStatus=complete`, and successful completion/diff evidence from the current JSON phase. Incomplete or blocked reviews produce a neutral comment and never create an approved lock.
 - Idempotency uses a marker tied to `(repo, pull request, head SHA, delivery run token)` and checks both prior reviews and issue comments.
 - Invalid inline comment targets are moved into the top-level review body instead of failing the entire review.
 

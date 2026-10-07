@@ -6,7 +6,13 @@ import {
   createRunner,
   createTwoPhaseFakeCodexBinary,
   readJsonFile,
+  testDiffOutput,
+  testInspectionScope,
 } from './codex-test-helpers.js'
+
+vi.mock('../src/review/workspace-git.js', () => ({
+  runCommand: vi.fn(() => Promise.resolve(testDiffOutput)),
+}))
 
 afterEach(async () => {
   await cleanupCodexTestArtifacts()
@@ -17,6 +23,8 @@ describe('createCodexRunner reviewTwoPhase', () => {
     const { binPath, capturePath } = await createTwoPhaseFakeCodexBinary({
       phase1Output: 'phase-one-summary',
       phase2Output: JSON.stringify({
+        reviewStatus: 'complete',
+        incompleteReason: '',
         summary: 'ok',
         changesOverview: '',
         score: 9,
@@ -33,6 +41,7 @@ describe('createCodexRunner reviewTwoPhase', () => {
     const outcome = await runner.reviewTwoPhase({
       phase1Prompt: 'phase1',
       phase2Prompt,
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 
@@ -51,7 +60,8 @@ describe('createCodexRunner reviewTwoPhase', () => {
     const capture = await readJsonFile<Array<{ stdin: string }>>(capturePath)
     expect(capture).toHaveLength(2)
     expect(capture[0]?.stdin).toBe('phase1')
-    expect(capture[1]?.stdin).toBe('phase2:phase-one-summary')
+    expect(capture[1]?.stdin).toContain('phase2:phase-one-summary')
+    expect(capture[1]?.stdin).toContain('Mandatory diff inspection:')
   })
 
   it('returns the phase one failure without running phase two', async () => {
@@ -67,6 +77,7 @@ describe('createCodexRunner reviewTwoPhase', () => {
     const outcome = await runner.reviewTwoPhase({
       phase1Prompt: 'phase1',
       phase2Prompt,
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 

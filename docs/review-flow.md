@@ -64,7 +64,9 @@ Prompt requirements:
 
 Output contract:
 
-- JSON object with `summary`, `changesOverview`, `score`, `decision`, `findings`.
+- JSON object with `reviewStatus`, `incompleteReason`, `summary`, `changesOverview`, `score`, `decision`, `findings`.
+- Publication requires `reviewStatus=complete` and empty `incompleteReason`; other statuses must explain the limitation.
+- The current JSON phase must emit a completed turn and a successful mandatory diff-inspection command whose full output matches independent Git inspection. Phase-one events do not satisfy this requirement.
 - `changesOverview` key is always required in model JSON for output-schema compatibility.
 - If model has no meaningful overview, set `changesOverview` to an empty string.
 
@@ -102,7 +104,9 @@ Output contract:
 
 ## 5. Publish Rules
 
-Decision mapping remains deterministic:
+Publication first requires the [completion gate](review-contract.md#completion-gate). Incomplete/blocked results, missing runtime evidence, or truncated/mismatched diffs produce a neutral failure comment. They do not create a successful-review artifact or approved lock.
+
+Decision mapping remains deterministic after the gate passes:
 
 - Any `critical` or `major` finding => publish `REQUEST_CHANGES`.
 - Only `minor`/`improvement` findings or no findings => publish `APPROVE`.
@@ -152,6 +156,6 @@ Additional notes:
 ### Scenario D: First Attempt Failed
 
 1. Maintainer requests review.
-2. Pipeline fails before publishing successful review.
+2. Pipeline fails, or Codex exits zero but cannot prove complete diff inspection; bot leaves a neutral failure comment without publishing a successful review.
 3. Maintainer requests review again.
 4. Bot still treats this run as `initial_review` (2 phases).

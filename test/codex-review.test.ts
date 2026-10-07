@@ -10,7 +10,13 @@ import {
   createSchemaOutputFakeCodexBinary,
   createSlowFakeCodexBinary,
   readJsonFile,
+  testDiffOutput,
+  testInspectionScope,
 } from './codex-test-helpers.js'
+
+vi.mock('../src/review/workspace-git.js', () => ({
+  runCommand: vi.fn(() => Promise.resolve(testDiffOutput)),
+}))
 
 afterEach(async () => {
   vi.unstubAllEnvs()
@@ -26,6 +32,7 @@ describe('createCodexRunner review', () => {
 
     await runner.review({
       prompt: 'Review this diff',
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 
@@ -47,6 +54,7 @@ describe('createCodexRunner review', () => {
 
     const outcome = await runner.review({
       prompt: 'Review this diff',
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 
@@ -79,7 +87,11 @@ describe('createCodexRunner review', () => {
     expect(capture.args).toContain('shell_environment_policy.inherit="core"')
     expect(capture.args).toContain('--output-schema')
     expect(capture.args).toContain('--output-last-message')
-    expect(capture.stdin).toBe('Review this diff')
+    expect(capture.stdin).toContain('Review this diff')
+    expect(capture.stdin).toContain('Mandatory diff inspection:')
+    expect(capture.args).toContain('--json')
+    expect(capture.outputSchema?.required).toContain('reviewStatus')
+    expect(capture.outputSchema?.required).toContain('incompleteReason')
     expect(capture.cwd).toBe(process.cwd())
     expect(capture.outputSchema).not.toBeNull()
     expect(capture.outputSchema?.properties).toHaveProperty('changesOverview')
@@ -97,6 +109,7 @@ describe('createCodexRunner review', () => {
 
     expect(await runner.review({
       prompt: 'Review this diff',
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })).toMatchObject({ ok: true })
 
@@ -119,6 +132,7 @@ describe('createCodexRunner review', () => {
 
     const outcome = await runner.review({
       prompt: 'Review this diff',
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 
@@ -160,6 +174,7 @@ describe('createCodexRunner review', () => {
     const reviewPromise = runner.review({
       abortSignal: controller.signal,
       prompt: 'Review this diff',
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 
@@ -201,6 +216,7 @@ describe('createCodexRunner review', () => {
 
     const outcome = await runner.review({
       prompt: 'Review this diff',
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 
@@ -235,6 +251,7 @@ describe('createCodexRunner review', () => {
 
     const outcome = await runner.review({
       prompt: 'Review this diff',
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 
@@ -256,6 +273,8 @@ describe('createCodexRunner review', () => {
       output: [
         '```json',
         JSON.stringify({
+          reviewStatus: 'complete',
+          incompleteReason: '',
           summary: 'ok',
           changesOverview: '',
           score: 9,
@@ -272,6 +291,7 @@ describe('createCodexRunner review', () => {
 
     const outcome = await runner.review({
       prompt: 'Review this diff',
+      inspection: testInspectionScope,
       workingDirectory: '/tmp/pr-workspace',
     })
 

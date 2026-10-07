@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ReviewService } from '../src/review/service.js'
 import type { CodexRunner } from '../src/review/codex.js'
@@ -14,6 +14,15 @@ import type {
   ReviewWorkspaceManager,
   WorkspacePrepareOptions,
 } from '../src/review/workspace.js'
+
+import {
+  cleanupCodexTestArtifacts,
+  createRunner,
+  createTwoPhaseFakeCodexBinary,
+  readJsonFile,
+} from './codex-test-helpers.js'
+
+afterEach(cleanupCodexTestArtifacts)
 
 type PublishReviewInput = Parameters<ReviewPlatform['publishReview']>[0]
 
@@ -230,6 +239,36 @@ function makeCodexRunner(input?: {
 }
 
 describe('ReviewService', () => {
+  it.each(['approve', 'request_changes'] as const)('posts a neutral comment instead of %s without inspection evidence and permits a fresh initial retry', async (decision) => {
+    const github = createGitHubPlatform()
+    const workspace = createWorkspaceManager()
+    const { binPath, capturePath } = await createTwoPhaseFakeCodexBinary({
+      phase1Output: 'PR summary',
+      phase2Output: JSON.stringify({
+        ...createReviewResult({ decision }),
+        reviewStatus: 'complete', incompleteReason: '',
+      }),
+      phase2Stdout: JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 10 } }) + '\n',
+    })
+    const { runner } = createRunner({ bin: binPath, timeoutMs: 5_000 })
+    const service = new ReviewService(github.platform, runner, workspace.manager, createLoggerStub(), 'review-bot')
+
+    await service.handlePullRequestEvent(createPullRequestEvent())
+    expect(github.mocks.publishReview).not.toHaveBeenCalled()
+    expect(github.mocks.publishFailureComment).toHaveBeenCalledWith(
+      expect.anything(), expect.stringContaining('did not successfully execute the required diff inspection'),
+    )
+    expect(workspace.mocks.cleanup).toHaveBeenCalledTimes(1)
+
+    await service.handlePullRequestEvent(createPullRequestEvent({ deliveryId: 'fresh-retry' }))
+    expect(github.mocks.publishReview).not.toHaveBeenCalled()
+    expect(github.mocks.publishFailureComment).toHaveBeenCalledTimes(2)
+    expect(workspace.mocks.cleanup).toHaveBeenCalledTimes(2)
+    const capture = await readJsonFile<Array<{ stdin: string }>>(capturePath)
+    expect(capture).toHaveLength(4)
+    expect(capture[2]?.stdin).toContain('pr-info.yaml')
+  })
+
   it('uses two-phase codex flow for initial review requests', async () => {
     const github = createGitHubPlatform({
       getPriorSuccessfulReview: vi

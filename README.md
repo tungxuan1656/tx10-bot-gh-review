@@ -10,7 +10,7 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 - Temporary git workspace checkout at the webhook `headSha`
 - Review skill bundle injection from `resources/review-skills/*` into the temp workspace `.agents/skills`
 - Pull request discussion context fetch (GraphQL-first, REST fallback) persisted as `pr-review-comments.md` and referenced by the prompt for in-workspace reading
-- Codex CLI invocation in the temporary workspace with a strict JSON output contract
+- Codex CLI invocation in the temporary workspace with a strict JSON output contract and completion gate (completed turn, successful full diff inspection, and `reviewStatus=complete`)
 - Initial review flow with 2 phases (metadata summary, then deep JSON review)
 - Re-review flow with 1 fast JSON phase focused on delta since the latest successful bot-reviewed SHA
 - Deterministic GitHub review publishing:
@@ -79,6 +79,8 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 For macOS, use PM2 with Cloudflare Tunnel as described in the deployment guide. For Linux, use a small server running the app with `systemd` behind `nginx`. Build with `pnpm build`; the runtime entrypoint is `dist/src/http/index.js` (`pnpm start`). Keep `resources/review-skills/` beside `dist/` in the deployed checkout. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR run token before publishing a new result after the bot account is requested for review.
 
 Codex uses a read-only sandbox and a restricted child environment. GitHub credentials are passed only to Git fetches and are not stored in workspace remotes. This reduces exposure but is not host-level filesystem isolation; run under a dedicated account with limited access to sensitive files.
+
+Codex must support `exec --json` with command-execution and turn-completion events. Missing evidence, incomplete/blocked output, or truncated diffs produce a neutral failure comment, not an approval. See the [Review Contract](docs/review-contract.md) for the completion gate and large-diff limitation.
 
 Codex reviews are allowed to run for up to 15 minutes by default so larger pull requests have enough time to complete. If needed, tune this with `CODEX_TIMEOUT_MS`.
 
