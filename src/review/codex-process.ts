@@ -4,6 +4,8 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 
 import type { AppLogger } from '../types/app.js'
+import type { CodexInspection } from './types.js'
+import { buildInspectionCommand, getCompletionFailure } from './codex-completion.js'
 import {
   codexOutputJsonSchema,
   detectFailureHint,
@@ -25,6 +27,7 @@ export async function runCodexPhase(input: {
   prompt: string
   timeoutMs: number
   validateJson: boolean
+  inspection?: CodexInspection
   workingDirectory: string
 }): Promise<CodexPhaseResult> {
   if (input.abortSignal?.aborted) {
@@ -46,8 +49,19 @@ export async function runCodexPhase(input: {
       )
     }
 
+    if (input.validateJson && !input.inspection) {
+      throw new Error('JSON review requires a diff inspection scope.')
+    }
+    const inspection = input.validateJson && input.inspection
+      ? buildInspectionCommand(input.workingDirectory, input.inspection)
+      : null
+    const prompt = inspection
+      ? `${input.prompt}\n\nMandatory diff inspection:\nRun this exact command as a standalone shell tool call, without pipes, redirects, prefixes, or modifications:\n${inspection.command}\nRead its entire output. Request enough output tokens; if truncated, report incomplete rather than approve.`
+      : input.prompt
+
     const args = [
       'exec',
+      '--json',
       '--cd',
       input.workingDirectory,
       ...(input.model ? ['--model', input.model] : []),
@@ -120,7 +134,7 @@ export async function runCodexPhase(input: {
       stdinWriteError = error
     })
     try {
-      child.stdin.end(input.prompt)
+      child.stdin.end(prompt)
     } catch (error) {
       stdinWriteError = error
     }
@@ -232,9 +246,24 @@ export async function runCodexPhase(input: {
       return { ok: false, reason: 'Codex returned a non-zero exit code.' }
     }
 
-    const rawOutput = stripJsonFences(
-      await readFile(outputPath, 'utf8').catch(() => stdout),
-    )
+    const completionFailure = await getCompletionFailure({
+      stdout,
+      workingDirectory: input.workingDirectory,
+      ...(input.validateJson && input.inspection ? { inspection: input.inspection } : {}),
+      timeoutMs: input.timeoutMs,
+    })
+    if (completionFailure) {
+      input.logger.warn(
+        {
+          component: 'codex', event: 'codex.completion_gate_failed', phase: input.phaseLabel,
+          reason: completionFailure, status: 'failed',
+        },
+        'Codex completion gate failed',
+      )
+      return { ok: false, reason: completionFailure }
+    }
+
+    const rawOutput = stripJsonFences(await readFile(outputPath, 'utf8'))
 
     input.logger.info(
       {

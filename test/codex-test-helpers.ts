@@ -7,6 +7,21 @@ import { createCodexRunner } from '../src/review/codex.js'
 
 const createdDirectories: string[] = []
 
+export const testInspectionScope = {
+  range: 'refs/codex-review/base...refs/codex-review/head',
+  paths: ['src/app.ts'],
+}
+export const testDiffOutput = 'verified-diff\n'
+const completedTurn = JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 10 } }) + '\n'
+const defaultCodexEvents = JSON.stringify({
+  type: 'item.completed',
+  item: {
+    id: 'item_0', type: 'command_execution', status: 'completed', exit_code: 0,
+    command: "git -C '/tmp/pr-workspace' --no-pager diff --no-ext-diff --no-textconv --color=never --unified=5 'refs/codex-review/base...refs/codex-review/head' -- ':(literal)src/app.ts'",
+    aggregated_output: testDiffOutput,
+  },
+}) + '\n' + completedTurn
+
 export async function cleanupCodexTestArtifacts(): Promise<void> {
   await Promise.all(
     createdDirectories
@@ -83,8 +98,9 @@ export async function createFakeCodexBinary(): Promise<{
       ');',
       'await writeFile(',
       '  outputPath,',
-      "  JSON.stringify({ summary: 'ok', score: 9, decision: 'approve', findings: [] }),",
+      "  JSON.stringify({ reviewStatus: 'complete', incompleteReason: '', summary: 'ok', score: 9, decision: 'approve', findings: [] }),",
       ');',
+      `process.stdout.write(${JSON.stringify(defaultCodexEvents)});`,
     ].join('\n'),
     'utf8',
   )
@@ -142,6 +158,7 @@ export async function createFailingFakeCodexBinary(input: {
 
 export async function createSchemaOutputFakeCodexBinary(input: {
   output: string
+  stdout?: string
 }): Promise<string> {
   const tempDirectory = await mkdtemp(
     path.join(os.tmpdir(), 'codex-runner-invalid-schema-test-'),
@@ -158,6 +175,7 @@ export async function createSchemaOutputFakeCodexBinary(input: {
       "const outputIndex = args.indexOf('--output-last-message');",
       'const outputPath = args[outputIndex + 1];',
       `await writeFile(outputPath, ${JSON.stringify(input.output)}, 'utf8');`,
+      `process.stdout.write(${JSON.stringify(input.stdout ?? defaultCodexEvents)});`,
     ].join('\n'),
     'utf8',
   )
@@ -169,6 +187,8 @@ export async function createSchemaOutputFakeCodexBinary(input: {
 export async function createTwoPhaseFakeCodexBinary(input: {
   phase1Output: string
   phase2Output: string
+  phase1Stdout?: string
+  phase2Stdout?: string
 }): Promise<{
   binPath: string
   capturePath: string
@@ -202,6 +222,7 @@ export async function createTwoPhaseFakeCodexBinary(input: {
       `await writeFile(${JSON.stringify(capturePath)}, JSON.stringify(capture), "utf8");`,
       `const output = capture.length === 1 ? ${JSON.stringify(input.phase1Output)} : ${JSON.stringify(input.phase2Output)};`,
       'await writeFile(outputPath, output, "utf8");',
+      `process.stdout.write(capture.length === 1 ? ${JSON.stringify(input.phase1Stdout ?? completedTurn)} : ${JSON.stringify(input.phase2Stdout ?? defaultCodexEvents)});`,
     ].join('\n'),
     'utf8',
   )

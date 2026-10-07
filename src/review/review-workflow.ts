@@ -83,6 +83,10 @@ async function runInitialReview(input: {
     {
       abortSignal: input.run.abortController.signal,
       phase1Prompt,
+      inspection: {
+        range: 'refs/codex-review/base...refs/codex-review/head',
+        paths: input.reviewablePaths,
+      },
       phase2Prompt: (phase1Summary) =>
         buildInitialReviewPhase2Prompt({
           owner: input.context.owner,
@@ -149,6 +153,10 @@ async function runReReview(input: {
     {
       abortSignal: input.run.abortController.signal,
       prompt,
+      inspection: {
+        range: `${delta.deltaFromRef}${delta.deltaFromRef === 'refs/codex-review/base' ? '...' : '..'}${delta.deltaToRef}`,
+        paths: input.reviewablePaths,
+      },
       workingDirectory: input.workspace.workingDirectory,
     },
     createChildLogger(input.runLogger, {

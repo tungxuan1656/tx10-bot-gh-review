@@ -23,6 +23,16 @@ export const reviewResultSchema = z.object({
   findings: z.array(reviewFindingSchema),
 })
 
+export const codexReviewResultSchema = reviewResultSchema.extend({
+  reviewStatus: z.enum(['complete', 'incomplete', 'blocked']),
+  incompleteReason: z.string(),
+}).strict().refine(
+  (result) => result.reviewStatus === 'complete'
+    ? result.incompleteReason === ''
+    : result.incompleteReason.trim().length > 0,
+  { message: 'Complete reviews must have an empty incompleteReason; other statuses must explain the limitation.' },
+)
+
 export type ReviewFinding = z.infer<typeof reviewFindingSchema>
 export type ReviewResult = z.infer<typeof reviewResultSchema>
 export type FindingSeverity = z.infer<typeof findingSeveritySchema>

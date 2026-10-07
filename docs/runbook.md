@@ -34,7 +34,13 @@ Expected response:
 - Check that `CODEX_BIN` resolves to a working Codex CLI binary
 - Check that `CODEX_MODEL` is set to a supported model in your environment
 - Run `codex --help` on the host to confirm availability
-- Inspect service logs for timeout or non-zero exit warnings
+- Inspect service logs for timeout, non-zero exit warnings, and `codex.completion_gate_failed`
+- Check `codex --version` and `codex exec --help`: this runner requires `--json` command-execution and turn-completion events
+- Missing completion metadata, `incomplete`/`blocked`, failed shell inspection, output mismatch, or truncated diff output produce neutral comments even when the CLI exits zero
+- `Independent Git diff verification failed.` is logged as `codex.completion_gate_failed`; check local Git availability and that the temporary repository and inspection refs are usable
+- `Codex diff inspection output was truncated` includes expected/received byte counts in both the gate log reason and the neutral comment. Codex 0.159.3 caps the tested shell capture at approximately 1 MiB; retrying an unchanged diff above that cap will not help. Reduce or split the reviewable diff; per-path/per-chunk evidence support is future work.
+- A complete JSONL capture does not prove the model saw the full tool output; the model-visible output has separate truncation limits
+- Do not disable the gate to recover approvals. Fix runtime/tool access and make a fresh manual request for transient failures; see the [Review Contract](review-contract.md) for capture-limit failures.
 - For non-zero exits, inspect `failureHint`, `stderrTailPreview`, and `stdoutTailPreview` on `codex.failed`
 - Confirm `resources/review-skills/` exists in the deployed service and can be copied into the temp workspace
 
@@ -57,7 +63,7 @@ Expected response:
 - The MVP stores queue state in memory and persistent dedupe state on the PR itself via HTML comment markers.
 - Work is processed through one global FIFO queue across all repos and PRs in this process.
 - `synchronize` events are ignored; only explicit `review_requested` starts a run.
-- Initial review runs in 2 phases, while re-review runs in 1 fast phase.
+- Initial review runs in 2 phases, while re-review runs in 1 fast phase. Diff evidence must come from the current JSON phase, not the metadata phase. A failed completion gate is not a successful review.
 - Workspaces are cleaned on success, cancellation, and discussion fetch/persistence failures.
 - Codex runs read-only with a restricted environment; GitHub tokens are not retained in workspace remote URLs. Do not treat this as isolation from every readable host file.
 - Discussion context is fetched from GitHub per run and stored in `pr-review-comments.md` inside the workspace, with cached snapshots cleaned by TTL.
@@ -147,6 +153,7 @@ If a review fails, check these logs first:
 
 - `review.idempotency_checked`
 - `review.codex_failed`
+- `codex.completion_gate_failed`
 - `review.failed`
 - `review.cancel_requested`
 - `review.canceled`

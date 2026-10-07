@@ -1,6 +1,6 @@
-import { reviewResultSchema } from './types.js'
+import { codexReviewResultSchema, reviewResultSchema } from './types.js'
 import type { AppLogger } from '../types/app.js'
-import type { CodexReviewOutcome, CodexRunner } from './types.js'
+import type { CodexInspection, CodexReviewOutcome, CodexRunner } from './types.js'
 import { runCodexPhase } from './codex-process.js'
 
 export type { CodexRunner } from './types.js'
@@ -17,6 +17,7 @@ export function createCodexRunner(input: {
     async review(
       reviewInput: {
         prompt: string
+        inspection: CodexInspection
         workingDirectory: string
         abortSignal?: AbortSignal
       },
@@ -49,6 +50,7 @@ export function createCodexRunner(input: {
           workingDirectory: reviewInput.workingDirectory,
           abortSignal: reviewInput.abortSignal,
           validateJson: true,
+          inspection: reviewInput.inspection,
           phaseLabel: 'single',
           logger,
           model: input.model,
@@ -60,7 +62,7 @@ export function createCodexRunner(input: {
         }
 
         const parsed: unknown = JSON.parse(phaseResult.output)
-        const result = reviewResultSchema.safeParse(parsed)
+        const result = codexReviewResultSchema.safeParse(parsed)
 
         if (!result.success) {
           logger.warn(
@@ -82,6 +84,20 @@ export function createCodexRunner(input: {
           }
         }
 
+        if (result.data.reviewStatus !== 'complete') {
+          logger.warn(
+            {
+              component: 'codex', event: 'codex.completion_gate_failed',
+              reviewStatus: result.data.reviewStatus, reason: 'review_incomplete', status: 'failed',
+            },
+            'Codex completion gate failed',
+          )
+          return {
+            ok: false,
+            reason: `Codex reported a ${result.data.reviewStatus} review: ${result.data.incompleteReason.slice(0, 500)}`,
+          }
+        }
+
         logger.info(
           {
             component: 'codex',
@@ -96,7 +112,7 @@ export function createCodexRunner(input: {
           'Codex review completed',
         )
 
-        return { ok: true, result: result.data }
+        return { ok: true, result: reviewResultSchema.parse(result.data) }
       } catch (error) {
         logger.error(
           {
@@ -119,6 +135,7 @@ export function createCodexRunner(input: {
       chainedInput: {
         phase1Prompt: string
         phase2Prompt: (phase1Output: string) => string
+        inspection: CodexInspection
         workingDirectory: string
         abortSignal?: AbortSignal
       },
@@ -166,6 +183,7 @@ export function createCodexRunner(input: {
           workingDirectory: chainedInput.workingDirectory,
           abortSignal: chainedInput.abortSignal,
           validateJson: true,
+          inspection: chainedInput.inspection,
           phaseLabel: 'phase2',
           logger,
           model: input.model,
@@ -177,7 +195,7 @@ export function createCodexRunner(input: {
         }
 
         const parsed: unknown = JSON.parse(phase2Result.output)
-        const result = reviewResultSchema.safeParse(parsed)
+        const result = codexReviewResultSchema.safeParse(parsed)
 
         if (!result.success) {
           logger.warn(
@@ -199,6 +217,20 @@ export function createCodexRunner(input: {
           }
         }
 
+        if (result.data.reviewStatus !== 'complete') {
+          logger.warn(
+            {
+              component: 'codex', event: 'codex.completion_gate_failed',
+              reviewStatus: result.data.reviewStatus, reason: 'review_incomplete', status: 'failed',
+            },
+            'Codex completion gate failed',
+          )
+          return {
+            ok: false,
+            reason: `Codex reported a ${result.data.reviewStatus} review: ${result.data.incompleteReason.slice(0, 500)}`,
+          }
+        }
+
         logger.info(
           {
             component: 'codex',
@@ -213,7 +245,7 @@ export function createCodexRunner(input: {
           'Codex two-phase review completed',
         )
 
-        return { ok: true, result: result.data }
+        return { ok: true, result: reviewResultSchema.parse(result.data) }
       } catch (error) {
         logger.error(
           {
