@@ -1,4 +1,4 @@
-import { buildPullRequestKey, routePullRequestEvent } from './service-helpers.js'
+import { buildPullRequestKey, buildRunKey, routePullRequestEvent } from './service-helpers.js'
 import type { AppLogger } from '../types/app.js'
 import type {
   NormalizedPullRequestEvent,
@@ -61,7 +61,8 @@ export async function isApprovedLockedByPlatform(input: {
     return false
   }
 
-  if (input.approvedLockedPullRequests.has(input.pullRequestKey)) {
+  const approvedRunKey = buildRunKey(input.context)
+  if (input.approvedLockedPullRequests.has(approvedRunKey)) {
     return true
   }
 
@@ -70,11 +71,14 @@ export async function isApprovedLockedByPlatform(input: {
       input.context,
     )
 
-    if (priorSuccessfulReview.latestReviewState !== 'APPROVED') {
+    if (
+      priorSuccessfulReview.latestReviewState !== 'APPROVED' ||
+      priorSuccessfulReview.latestReviewedSha !== input.context.headSha
+    ) {
       return false
     }
 
-    input.approvedLockedPullRequests.add(input.pullRequestKey)
+    input.approvedLockedPullRequests.add(approvedRunKey)
     return true
   } catch (error) {
     input.deliveryLogger.warn(

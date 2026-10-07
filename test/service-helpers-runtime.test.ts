@@ -137,7 +137,7 @@ describe('service runtime helpers', () => {
 
   it('checks approved lock state from memory and platform lookup', async () => {
     const logger = createLoggerStub()
-    const approvedLockedPullRequests = new Set<string>(['acme/repo#42'])
+    const approvedLockedPullRequests = new Set<string>(['acme/repo#42@abc123'])
 
     await expect(
       isApprovedLockedByPlatform({
@@ -169,7 +169,28 @@ describe('service runtime helpers', () => {
         pullRequestKey: 'acme/repo#42',
       }),
     ).resolves.toBe(true)
-    expect(unlocked.has('acme/repo#42')).toBe(true)
+    expect(unlocked.has('acme/repo#42@abc123')).toBe(true)
+  })
+
+  it('does not lock a new head SHA because an older SHA was approved', async () => {
+    const logger = createLoggerStub()
+    const github = {
+      getPriorSuccessfulReview: vi.fn().mockResolvedValue({
+        hasPriorSuccessfulReview: true,
+        latestReviewedSha: 'old-sha',
+        latestReviewState: 'APPROVED',
+      }),
+    } as unknown as ReviewPlatform
+
+    expect(await isApprovedLockedByPlatform({
+      approvedLockEnabled: true,
+      approvedLockedPullRequests: new Set(['acme/repo#42@old-sha']),
+      context: createPullRequestContext(),
+      deliveryLogger: logger,
+      github,
+      pullRequestKey: 'acme/repo#42',
+    })).toBe(false)
+    expect(logger.warn).not.toHaveBeenCalled()
   })
 
   it('returns false and logs when approved lock lookup fails', async () => {

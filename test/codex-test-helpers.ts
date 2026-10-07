@@ -8,8 +8,6 @@ import { createCodexRunner } from '../src/review/codex.js'
 const createdDirectories: string[] = []
 
 export async function cleanupCodexTestArtifacts(): Promise<void> {
-  delete process.env.TEST_CAPTURE_PATH
-  delete process.env.TEST_CANCEL_PATH
   await Promise.all(
     createdDirectories
       .splice(0)
@@ -74,12 +72,13 @@ export async function createFakeCodexBinary(): Promise<{
       "const outputIndex = args.indexOf('--output-last-message');",
       'const outputPath = args[outputIndex + 1];',
       'await writeFile(',
-      '  process.env.TEST_CAPTURE_PATH,',
+      `  ${JSON.stringify(capturePath)},`,
       '  JSON.stringify({',
       '    args,',
       '    cwd: process.cwd(),',
       '    stdin,',
       '    outputSchema,',
+      '    environment: Object.fromEntries(["GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "UNRELATED_SECRET", "OPENAI_API_KEY", "HOME", "PATH", "CODEX_HOME"].map((key) => [key, process.env[key]])),',
       '  }),',
       ');',
       'await writeFile(',
@@ -197,10 +196,10 @@ export async function createTwoPhaseFakeCodexBinary(input: {
       '});',
       'let capture = [];',
       'try {',
-      "  capture = JSON.parse(await readFile(process.env.TEST_CAPTURE_PATH, 'utf8'));",
+      `  capture = JSON.parse(await readFile(${JSON.stringify(capturePath)}, 'utf8'));`,
       '} catch {}',
       'capture.push({ stdin, args });',
-      'await writeFile(process.env.TEST_CAPTURE_PATH, JSON.stringify(capture), "utf8");',
+      `await writeFile(${JSON.stringify(capturePath)}, JSON.stringify(capture), "utf8");`,
       `const output = capture.length === 1 ? ${JSON.stringify(input.phase1Output)} : ${JSON.stringify(input.phase2Output)};`,
       'await writeFile(outputPath, output, "utf8");',
     ].join('\n'),
@@ -231,7 +230,7 @@ export async function createAbortAwareFakeCodexBinary(): Promise<{
       '#!/usr/bin/env node',
       "import { writeFile } from 'node:fs/promises';",
       "process.on('SIGTERM', async () => {",
-      "  await writeFile(process.env.TEST_CANCEL_PATH, 'sigterm', 'utf8');",
+      `  await writeFile(${JSON.stringify(cancelPath)}, 'sigterm', 'utf8');`,
       '  process.exit(0);',
       '});',
       'await new Promise(() => {});',

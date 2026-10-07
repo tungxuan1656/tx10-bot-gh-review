@@ -10,9 +10,9 @@
     "docs:check-links": "tsx scripts/check-doc-links.ts",
     "docs:lint": "markdownlint-cli2 \"README.md\" \"docs/**/*.md\"",
     "lint": "eslint src test scripts --ext .ts",
-    "start": "node dist/http/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "start": "node dist/src/http/index.js",
+    "test": "vitest run --exclude 'dist/**'",
+    "test:watch": "vitest --exclude 'dist/**'",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "validate": "pnpm lint && pnpm typecheck && pnpm test && pnpm docs:lint && pnpm docs:check-links"
   },

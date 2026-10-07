@@ -4,8 +4,9 @@ import type { AppLogger } from '../src/logger.js'
 import {
   checkPublishedReviewMarker,
   createActiveRun,
+  prepareWorkspaceAndDiscussion,
 } from '../src/review/review-execution-helpers.js'
-import type { PullRequestContext, ReviewPlatform } from '../src/review/types.js'
+import type { NormalizedPullRequestEvent, PullRequestContext, ReviewPlatform } from '../src/review/types.js'
 
 function createLoggerStub(): AppLogger {
   return {
@@ -73,6 +74,28 @@ describe('review execution helpers', () => {
       }),
       'Review idempotency marker missing',
     )
+  })
+
+  it('cleans up when persisting discussion context fails', async () => {
+    const context = createPullRequestContext()
+    const cleanup = vi.fn().mockResolvedValue(undefined)
+    const workspace = { availableRevisionRefs: [], cleanup, diff: '', prInfo: { ...context, description: '', commits: [], changedFilePaths: [] }, reviewableFiles: [], workingDirectory: '/tmp/workspace' }
+
+    await expect(prepareWorkspaceAndDiscussion({
+      context,
+      discussionCacheOptions: {},
+      event: { ...context, deliveryId: 'delivery', eventName: 'pull_request', actionKind: 'review_requested', senderLogin: 'author', requestedReviewerLogin: 'review-bot', requestedReviewerLogins: ['review-bot'], beforeSha: null, afterSha: null, botStillRequested: null } satisfies NormalizedPullRequestEvent,
+      github: { getPullRequestDiscussionMarkdown: vi.fn().mockResolvedValue('discussion') } as unknown as ReviewPlatform,
+      persistDiscussionContext: vi.fn().mockRejectedValue(new Error('disk full')),
+      prInfo: workspace.prInfo,
+      priorSuccessfulReview: { hasPriorSuccessfulReview: false, latestReviewedSha: null, latestReviewState: null },
+      reviewMode: 'initial_review',
+      run: createActiveRun({ context, runKey: 'run', pullRequestKey: 'pr' }),
+      runLogger: createLoggerStub(),
+      shouldStopForCancellation: () => false,
+      workspaceManager: { prepareWorkspace: vi.fn().mockResolvedValue(workspace) },
+    })).rejects.toThrow('disk full')
+    expect(cleanup).toHaveBeenCalledOnce()
   })
 
   it('rethrows non-404 idempotency failures', async () => {

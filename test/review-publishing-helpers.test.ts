@@ -198,7 +198,7 @@ describe('review publishing helpers', () => {
       runLogger: logger,
     })
 
-    expect(approvedLockedPullRequests.has('acme/repo#42')).toBe(true)
+    expect(approvedLockedPullRequests.has('acme/repo#42@abc123')).toBe(true)
 
     const notApplied = new Set<string>()
     applyApprovedLock({

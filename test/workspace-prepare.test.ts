@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -161,13 +161,13 @@ describe('workspace prepare helpers', () => {
     expect(runCommandMock).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        args: ['remote', 'add', 'origin', 'https://github.com/acme/base.git?token=secret'],
+        args: ['remote', 'add', 'origin', 'https://github.com/acme/base.git'],
       }),
     )
     expect(runCommandMock).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        args: ['remote', 'add', 'head', 'https://github.com/acme/head.git?token=secret'],
+        args: ['remote', 'add', 'head', 'https://github.com/acme/head.git'],
       }),
     )
     expect(result.availableRevisionRefs).toEqual([
@@ -200,6 +200,28 @@ describe('workspace prepare helpers', () => {
       }),
       'Workspace artifacts prepared',
     )
+  })
+
+  it('does not follow a PR symlink when writing pr-info.yaml', async () => {
+    const workingDirectory = await createWorkspaceDirectory()
+    const hostDirectory = await createWorkspaceDirectory()
+    const sentinel = path.join(hostDirectory, 'host-file')
+    await writeFile(sentinel, 'do not overwrite')
+    await symlink(sentinel, path.join(workingDirectory, 'pr-info.yaml'))
+    runCommandMock.mockResolvedValue('')
+
+    await prepareWorkspaceArtifacts({
+      context: createContext(),
+      logger: createLogger() as never,
+      options: undefined,
+      prInfo: createPrInfo(),
+      projectRoot: '/tmp/project-root',
+      runtime: createRuntime(),
+      workingDirectory,
+    })
+
+    expect(await readFile(sentinel, 'utf8')).toBe('do not overwrite')
+    expect(await readFile(path.join(workingDirectory, 'pr-info.yaml'), 'utf8')).toContain('owner: "acme"')
   })
 
   it('falls back cleanly when an additional revision fetch fails', async () => {

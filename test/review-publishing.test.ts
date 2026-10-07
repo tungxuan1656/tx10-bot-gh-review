@@ -240,7 +240,7 @@ describe('review publishing', () => {
       createPullRequestContext(),
       'hooray',
     )
-    expect(approvedLockedPullRequests.has('acme/repo#42')).toBe(true)
+    expect(approvedLockedPullRequests.has('acme/repo#42@abc123')).toBe(true)
   })
 
   it('skips publish when cancellation is requested before publishing', async () => {

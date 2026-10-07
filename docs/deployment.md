@@ -111,7 +111,7 @@ cd ~/tx10-bot-gh-review
 set -a
 source .env
 set +a
-node dist/http/index.js
+node dist/src/http/index.js
 ```
 
 In a second shell:
@@ -140,7 +140,7 @@ Type=simple
 User=deploy
 WorkingDirectory=/home/deploy/tx10-bot-gh-review
 EnvironmentFile=/home/deploy/tx10-bot-gh-review/.env
-ExecStart=/usr/bin/node /home/deploy/tx10-bot-gh-review/dist/http/index.js
+ExecStart=/usr/bin/node /home/deploy/tx10-bot-gh-review/dist/src/http/index.js
 Restart=always
 RestartSec=5
 
@@ -202,7 +202,7 @@ Behavior notes:
 - `synchronize` events are ignored and never auto-trigger review.
 - A new manual `review_requested` after a prior successful review runs fast re-review mode.
 - `review_request_removed` requests a best-effort cancellation and removes queued work for that PR.
-- When `REVIEW_APPROVED_LOCK_ENABLED=true`, all subsequent PR requests after bot approval are ignored with reason `approved_before`.
+- When `REVIEW_APPROVED_LOCK_ENABLED=true`, requests for the same approved head SHA are ignored with reason `approved_before`; a new head SHA can be reviewed after another manual request.
 
 ## Troubleshooting
 

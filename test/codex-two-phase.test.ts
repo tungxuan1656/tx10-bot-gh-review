@@ -24,7 +24,6 @@ describe('createCodexRunner reviewTwoPhase', () => {
         findings: [],
       }),
     })
-    process.env.TEST_CAPTURE_PATH = capturePath
     const { runner } = createRunner({
       bin: binPath,
       timeoutMs: 5_000,

@@ -132,7 +132,11 @@ export async function persistDiscussionContext(input: {
   )
 
   await writeFile(cacheSnapshotPath, input.discussionMarkdown, 'utf8')
-  await writeFile(workspaceDiscussionPath, input.discussionMarkdown, 'utf8')
+  await rm(workspaceDiscussionPath, { recursive: true, force: true })
+  await writeFile(workspaceDiscussionPath, input.discussionMarkdown, {
+    encoding: 'utf8',
+    flag: 'wx',
+  })
 
   input.runLogger.info(
     {

@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   cleanupCodexTestArtifacts,
@@ -13,13 +13,13 @@ import {
 } from './codex-test-helpers.js'
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await cleanupCodexTestArtifacts()
 })
 
 describe('createCodexRunner review', () => {
   it('defaults to a 15 minute timeout budget', async () => {
-    const { binPath, capturePath } = await createFakeCodexBinary()
-    process.env.TEST_CAPTURE_PATH = capturePath
+    const { binPath } = await createFakeCodexBinary()
     const { logger, runner } = createRunner({
       bin: binPath,
     })
@@ -40,7 +40,6 @@ describe('createCodexRunner review', () => {
 
   it('passes workspace, sandbox, and output schema to codex exec', async () => {
     const { binPath, capturePath } = await createFakeCodexBinary()
-    process.env.TEST_CAPTURE_PATH = capturePath
     const { runner } = createRunner({
       bin: binPath,
       timeoutMs: 5_000,
@@ -76,7 +75,8 @@ describe('createCodexRunner review', () => {
     expect(capture.args).toContain('--cd')
     expect(capture.args).toContain('/tmp/pr-workspace')
     expect(capture.args).toContain('--sandbox')
-    expect(capture.args).toContain('workspace-write')
+    expect(capture.args).toContain('read-only')
+    expect(capture.args).toContain('shell_environment_policy.inherit="none"')
     expect(capture.args).toContain('--output-schema')
     expect(capture.args).toContain('--output-last-message')
     expect(capture.stdin).toBe('Review this diff')
@@ -84,6 +84,30 @@ describe('createCodexRunner review', () => {
     expect(capture.outputSchema).not.toBeNull()
     expect(capture.outputSchema?.properties).toHaveProperty('changesOverview')
     expect(capture.outputSchema?.required).toContain('changesOverview')
+  })
+
+  it('keeps Codex authentication but does not inherit service or unrelated secrets', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'github-secret-sentinel')
+    vi.stubEnv('GITHUB_WEBHOOK_SECRET', 'webhook-secret-sentinel')
+    vi.stubEnv('UNRELATED_SECRET', 'unrelated-secret-sentinel')
+    vi.stubEnv('OPENAI_API_KEY', 'codex-auth-sentinel')
+    vi.stubEnv('CODEX_HOME', '/tmp/codex-home-sentinel')
+    const { binPath, capturePath } = await createFakeCodexBinary()
+    const { runner } = createRunner({ bin: binPath, timeoutMs: 5_000 })
+
+    expect(await runner.review({
+      prompt: 'Review this diff',
+      workingDirectory: '/tmp/pr-workspace',
+    })).toMatchObject({ ok: true })
+
+    const capture = await readJsonFile<{ environment: Record<string, string> }>(capturePath)
+    expect(capture.environment).not.toHaveProperty('GITHUB_TOKEN')
+    expect(capture.environment).not.toHaveProperty('GITHUB_WEBHOOK_SECRET')
+    expect(capture.environment).not.toHaveProperty('UNRELATED_SECRET')
+    expect(capture.environment.OPENAI_API_KEY).toBe('codex-auth-sentinel')
+    expect(capture.environment.CODEX_HOME).toBe('/tmp/codex-home-sentinel')
+    expect(capture.environment.HOME).toBe(process.env.HOME)
+    expect(capture.environment.PATH).toBe(process.env.PATH)
   })
 
   it('times out using the configured timeout and logs bounded output previews', async () => {
@@ -127,7 +151,6 @@ describe('createCodexRunner review', () => {
 
   it('cancels the Codex process when abort signal is triggered', async () => {
     const { binPath, cancelPath } = await createAbortAwareFakeCodexBinary()
-    process.env.TEST_CANCEL_PATH = cancelPath
     const { logger, runner } = createRunner({
       bin: binPath,
       timeoutMs: 5_000,

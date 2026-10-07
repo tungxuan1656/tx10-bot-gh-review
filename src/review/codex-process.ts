@@ -52,7 +52,9 @@ export async function runCodexPhase(input: {
       input.workingDirectory,
       ...(input.model ? ['--model', input.model] : []),
       '--sandbox',
-      'workspace-write',
+      'read-only',
+      '--config',
+      'shell_environment_policy.inherit="none"',
       '--skip-git-repo-check',
       ...(input.validateJson ? ['--output-schema', outputSchemaPath] : []),
       '--output-last-message',
@@ -76,7 +78,16 @@ export async function runCodexPhase(input: {
 
     const child = spawn(input.bin, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env: Object.fromEntries(
+        [
+          'PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'TMP', 'TEMP',
+          'SystemRoot', 'WINDIR', 'PATHEXT', 'CODEX_HOME',
+          'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_PROJECT_ID',
+          'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+          'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+          'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+        ].flatMap((key) => process.env[key] === undefined ? [] : [[key, process.env[key]]]),
+      ),
     })
 
     const stdoutChunks: Buffer[] = []
