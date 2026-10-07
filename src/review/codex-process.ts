@@ -54,7 +54,9 @@ export async function runCodexPhase(input: {
       '--sandbox',
       'read-only',
       '--config',
-      'shell_environment_policy.inherit="none"',
+      // "core" keeps PATH/HOME/TMPDIR available to model shell commands so git works,
+      // while Codex still strips KEY/TOKEN/SECRET variables from those commands.
+      'shell_environment_policy.inherit="core"',
       '--skip-git-repo-check',
       ...(input.validateJson ? ['--output-schema', outputSchemaPath] : []),
       '--output-last-message',

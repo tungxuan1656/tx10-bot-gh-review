@@ -76,7 +76,7 @@ describe('createCodexRunner review', () => {
     expect(capture.args).toContain('/tmp/pr-workspace')
     expect(capture.args).toContain('--sandbox')
     expect(capture.args).toContain('read-only')
-    expect(capture.args).toContain('shell_environment_policy.inherit="none"')
+    expect(capture.args).toContain('shell_environment_policy.inherit="core"')
     expect(capture.args).toContain('--output-schema')
     expect(capture.args).toContain('--output-last-message')
     expect(capture.stdin).toBe('Review this diff')

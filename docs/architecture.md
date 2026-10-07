@@ -53,7 +53,7 @@ sequenceDiagram
 - PR issue reactions are updated best-effort to reflect review state: `eyes` during review, `hooray` for `APPROVE`, `confused` for `REQUEST_CHANGES`, and `laugh` for ignored requests that never enter a review run. `approved_before`, cancellation, and failure do not change the reaction.
 - Approved lock skips repeat requests only for the same head SHA after a bot `APPROVE` when enabled. New head SHAs remain eligible for manual review. Ignored requests use reason `approved_before`.
 - Initial review and full-PR fallback use `base...head` (merge-base to head), matching GitHub PR diff semantics; re-review deltas compare previous reviewed SHA to current head directly.
-- GitHub authentication is supplied through fetch-only environment configuration, never remote URLs stored in `.git/config`. Codex receives only runtime/authentication/proxy environment keys, not service secrets; model shell commands inherit no environment.
+- GitHub authentication is supplied through fetch-only environment configuration, never remote URLs stored in `.git/config`. Codex receives only runtime/authentication/proxy environment keys, not service secrets; model shell commands inherit only core runtime variables (`PATH`, `HOME`, `TMPDIR`) and never secret-shaped variables.
 - Bot-owned metadata paths are replaced without following PR symlinks before writing. Workspace cleanup also covers discussion fetch/persistence failures.
 - Codex output is trusted only after JSON Schema validation.
 - Idempotency uses a marker tied to `(repo, pull request, head SHA, delivery run token)` and checks both prior reviews and issue comments.
