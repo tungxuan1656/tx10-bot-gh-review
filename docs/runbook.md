@@ -37,7 +37,10 @@ Expected response:
 - Inspect service logs for timeout, non-zero exit warnings, and `codex.completion_gate_failed`
 - Check `codex --version` and `codex exec --help`: this runner requires `--json` command-execution and turn-completion events
 - Missing completion metadata, `incomplete`/`blocked`, failed shell inspection, output mismatch, or truncated diff output produce neutral comments even when the CLI exits zero
-- Do not disable the gate to recover approvals; fix runtime/tool access or inspect the large-diff limit in the [Review Contract](review-contract.md), then make a fresh manual review request
+- `Independent Git diff verification failed.` is logged as `codex.completion_gate_failed`; check local Git availability and that the temporary repository and inspection refs are usable
+- `Codex diff inspection output was truncated` includes expected/received byte counts in both the gate log reason and the neutral comment. Codex 0.159.3 caps the tested shell capture at approximately 1 MiB; retrying an unchanged diff above that cap will not help. Reduce or split the reviewable diff; per-path/per-chunk evidence support is future work.
+- A complete JSONL capture does not prove the model saw the full tool output; the model-visible output has separate truncation limits
+- Do not disable the gate to recover approvals. Fix runtime/tool access and make a fresh manual request for transient failures; see the [Review Contract](review-contract.md) for capture-limit failures.
 - For non-zero exits, inspect `failureHint`, `stderrTailPreview`, and `stdoutTailPreview` on `codex.failed`
 - Confirm `resources/review-skills/` exists in the deployed service and can be copied into the temp workspace
 

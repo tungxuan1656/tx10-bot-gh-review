@@ -80,7 +80,7 @@ For macOS, use PM2 with Cloudflare Tunnel as described in the deployment guide. 
 
 Codex uses a read-only sandbox and a restricted child environment. GitHub credentials are passed only to Git fetches and are not stored in workspace remotes. This reduces exposure but is not host-level filesystem isolation; run under a dedicated account with limited access to sensitive files.
 
-Codex must support `exec --json` with command-execution and turn-completion events. Missing evidence, incomplete/blocked output, or truncated diffs produce a neutral failure comment, not an approval. See the [Review Contract](docs/review-contract.md) for the completion gate and large-diff limitation.
+Codex must support `exec --json` with command-execution and turn-completion events. Missing evidence, incomplete/blocked output, or truncated captured diffs produce a neutral failure comment, not an approval. Codex 0.159.3 caps the tested shell capture at approximately 1 MiB; retrying an unchanged diff above that cap cannot pass the current gate. Complete JSONL output proves captured diff coverage, not that the model saw or read all of it. See the [Review Contract](docs/review-contract.md) for these limits and recovery options.
 
 Codex reviews are allowed to run for up to 15 minutes by default so larger pull requests have enough time to complete. If needed, tune this with `CODEX_TIMEOUT_MS`.
 

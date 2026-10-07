@@ -35,8 +35,8 @@ function events(...items: unknown[]): string {
   return items.map((item) => JSON.stringify(item)).join('\n') + '\n'
 }
 
-async function review(output: unknown, stdout = events(completedCommand, completedTurn)) {
-  vi.mocked(runCommand).mockResolvedValue(patch)
+async function review(output: unknown, stdout = events(completedCommand, completedTurn), expectedOutput = patch) {
+  vi.mocked(runCommand).mockResolvedValue(expectedOutput)
   const bin = await createSchemaOutputFakeCodexBinary({ output: JSON.stringify(output), stdout })
   const { runner, logger } = createRunner({ bin, timeoutMs: 5_000 })
   return { outcome: await runner.review({ prompt: 'Review this diff', workingDirectory: '/tmp/pr-workspace', inspection }), logger }
@@ -87,6 +87,42 @@ describe('Codex review completion gate', () => {
     const { outcome, logger } = await review(completeResult, stdout)
     expect(outcome).toMatchObject({ ok: false })
     expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ event: 'codex.completion_gate_failed' }), 'Codex completion gate failed')
+  })
+
+  it('reports capture truncation with expected and received byte counts', async () => {
+    const expectedOutput = 'x'.repeat(1_633_901)
+    const capturedOutput = expectedOutput.slice(0, 524_288) + '\n... 585325 bytes omitted ...\n' + expectedOutput.slice(-524_288)
+    const reason = 'Codex diff inspection output was truncated (expected 1633901 bytes; received 1048606 bytes, including the omission marker).'
+    const { outcome, logger } = await review(completeResult, events(
+      { ...completedCommand, item: { ...completedCommand.item, aggregated_output: capturedOutput } }, completedTurn,
+    ), expectedOutput)
+    expect(outcome).toEqual({ ok: false, reason })
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ event: 'codex.completion_gate_failed', reason }), 'Codex completion gate failed')
+  })
+
+  it('accepts a full inspection even when another attempt has an omission marker', async () => {
+    const { outcome } = await review(completeResult, events(
+      { ...completedCommand, item: { ...completedCommand.item, aggregated_output: '\n... 10 bytes omitted ...\n' } },
+      completedCommand, completedTurn,
+    ))
+    expect(outcome.ok).toBe(true)
+  })
+
+  it('does not reject matching repository output containing an omission marker', async () => {
+    const expectedOutput = patch + '\n... 10 bytes omitted ...\n'
+    const { outcome } = await review(completeResult, events(
+      { ...completedCommand, item: { ...completedCommand.item, aggregated_output: expectedOutput } }, completedTurn,
+    ), expectedOutput)
+    expect(outcome.ok).toBe(true)
+  })
+
+  it('reports independent Git failure through the completion gate instead of process_error', async () => {
+    vi.mocked(runCommand).mockRejectedValueOnce(new Error('spawn git ENOENT'))
+    const reason = 'Independent Git diff verification failed.'
+    const { outcome, logger } = await review(completeResult)
+    expect(outcome).toEqual({ ok: false, reason })
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ event: 'codex.completion_gate_failed', reason }), 'Codex completion gate failed')
+    expect(logger.error).not.toHaveBeenCalled()
   })
 
   it('accepts the Codex POSIX shell wrapper and a successful retry after a failed inspection', async () => {

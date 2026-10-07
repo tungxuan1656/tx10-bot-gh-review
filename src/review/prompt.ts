@@ -25,7 +25,7 @@ export function shellQuotePath(path: string): string {
 }
 
 function formatReviewablePathspec(paths: string[]): string {
-  return paths.map((filePath) => shellQuotePath(filePath)).join(' ')
+  return paths.map((filePath) => shellQuotePath(`:(literal)${filePath}`)).join(' ')
 }
 
 /** Phase 1: Ask Codex to summarise the PR from pr-info.yaml. Returns free-form markdown. */

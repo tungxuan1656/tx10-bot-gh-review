@@ -62,9 +62,11 @@ Every JSON review phase must pass all of these checks before publishing:
 
 The runner appends the mandatory command to the prompt. It disables external diff helpers, text conversion, and colors. Initial/full-PR fallback inspections use `base...head`; re-review inspections use `previous..head`. An empty delta is allowed only after a successful matching inspection.
 
-An empty findings array is valid only after this gate. This verifies observable diff inspection, not the correctness of the model's reasoning. Additional context sufficiency is still reported by the model.
+An empty findings array is valid only after this gate. This verifies that the required command ran and its captured output matches Git, not that the model received or read every line, nor the correctness of its reasoning. Model-visible tool output can be truncated even when JSONL captures the complete output. Context sufficiency and actual review completion still rely on the model's report.
 
-Large diffs that exceed Codex tool-output limits are treated as incomplete rather than approved. The current gate deliberately requires one complete inspection output; paged inspection is not supported.
+Codex CLI 0.159.3 caps the tested shell capture at approximately 1 MiB (1,048,576 retained bytes). Beyond that cap, it keeps the head and tail with a `bytes omitted` marker; the gate rejects the incomplete capture and reports expected versus received byte counts, including the marker. This check runs before the final model response is read, so the neutral failure comment contains the gate's reason, not the model's `incompleteReason`.
+
+For that CLI/tool path, diffs above the capture cap cannot pass the current single-output gate; retrying the unchanged diff does not help. Reduce or split the PR's reviewable diff. Per-path/per-chunk evidence or a completeness-verified digest protocol would require a follow-up implementation. Paged inspection is not currently supported, and other CLI versions/tool paths may have different limits.
 
 ## Deterministic Decision Mapping
 
@@ -84,7 +86,7 @@ If Codex returns a `decision` that does not match the findings severity policy, 
 - Timeout => create one neutral PR comment
 - Invalid JSON or schema mismatch, including missing completion metadata => create one neutral PR comment
 - Incomplete/blocked review or missing/failed diff evidence => create one neutral PR comment; do not publish `APPROVE` or `REQUEST_CHANGES`
-- A failed completion gate does not create a successful-review artifact or approved lock; a fresh manual request can retry
+- A failed completion gate does not create a successful-review artifact or approved lock; a fresh manual request can retry transient failures, but capture-limit failures require a smaller diff or a future inspection strategy
 - Invalid inline location => keep the finding in the top-level summary instead of failing submission
 
 ## File Selection Policy

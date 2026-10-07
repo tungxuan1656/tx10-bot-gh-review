@@ -85,10 +85,19 @@ export async function getCompletionFailure(input: {
   }
 
   // Independent read-only Git output detects truncated, wrong, or stale inspection results.
-  const expectedOutput = await runCommand({
-    bin: 'git', args: required.args, cwd: input.workingDirectory, timeoutMs: input.timeoutMs,
-  })
+  let expectedOutput: string
+  try {
+    expectedOutput = await runCommand({
+      bin: 'git', args: required.args, cwd: input.workingDirectory, timeoutMs: input.timeoutMs,
+    })
+  } catch {
+    return 'Independent Git diff verification failed.'
+  }
   if (!completedCommands.some((command) => command.aggregated_output.trimEnd() === expectedOutput.trimEnd())) {
+    const truncatedCommand = completedCommands.find((command) => /\n\.\.\. \d+ bytes omitted \.\.\.\n/.test(command.aggregated_output))
+    if (truncatedCommand) {
+      return `Codex diff inspection output was truncated (expected ${Buffer.byteLength(expectedOutput, 'utf8')} bytes; received ${Buffer.byteLength(truncatedCommand.aggregated_output, 'utf8')} bytes, including the omission marker).`
+    }
     return 'Codex diff inspection output did not match the complete required diff.'
   }
   return null
