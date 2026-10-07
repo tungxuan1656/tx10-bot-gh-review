@@ -377,7 +377,7 @@ describe('ReviewService', () => {
       prompt: string
     }
     expect(reviewInput.prompt).toContain(
-      'Delta range: refs/codex-review/base..refs/codex-review/head',
+      'Delta range: refs/codex-review/base...refs/codex-review/head',
     )
     expect(reviewInput.prompt).toContain(
       'Delta fallback applied: previous_review_sha_not_fetchable',
@@ -512,6 +512,40 @@ describe('ReviewService', () => {
       }),
       'Webhook routed',
     )
+  })
+
+  it('reviews a new head after approving the previous SHA without restarting the service', async () => {
+    const getPriorSuccessfulReview = vi.fn()
+      .mockResolvedValue(createPriorReviewInfo({ hasPriorSuccessfulReview: true, latestReviewedSha: 'abc123', latestReviewState: 'APPROVED' }))
+      .mockResolvedValueOnce(createPriorReviewInfo())
+      .mockResolvedValueOnce(createPriorReviewInfo())
+    const github = createGitHubPlatform({ getPriorSuccessfulReview })
+    const workspace = createWorkspaceManager()
+    const review = vi.fn().mockResolvedValue({ ok: true, result: createReviewResult() })
+    const reviewTwoPhase = vi.fn().mockResolvedValue({ ok: true, result: createReviewResult() })
+    const service = new ReviewService(github.platform, makeCodexRunner({ review, reviewTwoPhase }), workspace.manager, createLoggerStub(), 'review-bot')
+
+    await service.handlePullRequestEvent(createPullRequestEvent({ deliveryId: 'approve-old' }))
+    await service.handlePullRequestEvent(createPullRequestEvent({ deliveryId: 'review-new', headSha: 'new-sha' }))
+
+    expect(reviewTwoPhase).toHaveBeenCalledOnce()
+    expect(review).toHaveBeenCalledOnce()
+    expect(github.mocks.publishReview).toHaveBeenCalledTimes(2)
+    expect(workspace.mocks.cleanup).toHaveBeenCalledTimes(2)
+  })
+
+  it('cleans up the workspace when fetching discussion context fails', async () => {
+    const github = createGitHubPlatform({ getPullRequestDiscussionMarkdown: vi.fn().mockRejectedValue(new Error('discussion unavailable')) })
+    const workspace = createWorkspaceManager()
+    const reviewTwoPhase = vi.fn()
+    const service = new ReviewService(github.platform, makeCodexRunner({ reviewTwoPhase }), workspace.manager, createLoggerStub(), 'review-bot')
+
+    await service.handlePullRequestEvent(createPullRequestEvent())
+
+    expect(workspace.mocks.cleanup).toHaveBeenCalledOnce()
+    expect(reviewTwoPhase).not.toHaveBeenCalled()
+    expect(github.mocks.publishReview).not.toHaveBeenCalled()
+    expect(github.mocks.publishFailureComment).toHaveBeenCalledOnce()
   })
 
   it('keeps classifying as initial review when first run failed to publish successful review', async () => {

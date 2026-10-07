@@ -3,6 +3,7 @@ import {
   cp,
   mkdir,
   readdir,
+  rm,
 } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -53,6 +54,8 @@ export async function copyReviewSkillsToWorkspace(input: {
     withFileTypes: true,
   })
 
+  // PR-owned symlinks and skills must not control where trusted skills are copied.
+  await rm(path.join(input.workingDirectory, '.agents'), { recursive: true, force: true })
   await mkdir(destinationSkillsDirectory, { recursive: true })
 
   await Promise.all(

@@ -172,49 +172,54 @@ export async function prepareWorkspaceAndDiscussion(input: {
     },
   )
 
-  input.runLogger.info(
-    {
-      event: 'review.workspace_prepared',
-      reviewableFileCount: workspace.reviewableFiles.length,
-      status: 'completed',
+  try {
+    input.runLogger.info(
+      {
+        event: 'review.workspace_prepared',
+        reviewableFileCount: workspace.reviewableFiles.length,
+        status: 'completed',
+        workingDirectory: workspace.workingDirectory,
+      },
+      'Review workspace prepared',
+    )
+
+    if (
+      input.shouldStopForCancellation(
+        input.runLogger,
+        input.run,
+        'after_workspace_prepare',
+      )
+    ) {
+      await workspace.cleanup()
+      return null
+    }
+
+    const discussionMarkdown =
+      await input.github.getPullRequestDiscussionMarkdown(input.context)
+    await input.persistDiscussionContext({
+      context: input.context,
+      discussionMarkdown,
+      runLogger: input.runLogger,
       workingDirectory: workspace.workingDirectory,
-    },
-    'Review workspace prepared',
-  )
+      options: input.discussionCacheOptions,
+    })
 
-  if (
-    input.shouldStopForCancellation(
-      input.runLogger,
-      input.run,
-      'after_workspace_prepare',
-    )
-  ) {
+    if (
+      input.shouldStopForCancellation(
+        input.runLogger,
+        input.run,
+        'after_discussion_context',
+      )
+    ) {
+      await workspace.cleanup()
+      return null
+    }
+
+    return workspace
+  } catch (error) {
     await workspace.cleanup()
-    return null
+    throw error
   }
-
-  const discussionMarkdown =
-    await input.github.getPullRequestDiscussionMarkdown(input.context)
-  await input.persistDiscussionContext({
-    context: input.context,
-    discussionMarkdown,
-    runLogger: input.runLogger,
-    workingDirectory: workspace.workingDirectory,
-    options: input.discussionCacheOptions,
-  })
-
-  if (
-    input.shouldStopForCancellation(
-      input.runLogger,
-      input.run,
-      'after_discussion_context',
-    )
-  ) {
-    await workspace.cleanup()
-    return null
-  }
-
-  return workspace
 }
 
 export async function executeReviewWorkflow(input: {

@@ -45,7 +45,7 @@ async function runGit(args: string[], cwd: string): Promise<string> {
   return Buffer.concat(stdoutChunks).toString('utf8').trim()
 }
 
-async function createRemoteRepository(): Promise<{
+async function createRemoteRepository(divergedBase = false): Promise<{
   baseSha: string
   headSha: string
   remotePath: string
@@ -70,8 +70,13 @@ async function createRemoteRepository(): Promise<{
   )
   await writeFile(path.join(sourcePath, 'README.md'), '# Base\n', 'utf8')
   await runGit(['add', 'src/app.ts', 'README.md'], sourcePath)
+  if (divergedBase) {
+    await writeFile(path.join(sourcePath, 'base-only.ts'), 'export const base = 1;\n')
+    await runGit(['add', 'base-only.ts'], sourcePath)
+  }
   await runGit(['commit', '-m', 'base'], sourcePath)
-  const baseSha = await runGit(['rev-parse', 'HEAD'], sourcePath)
+  let baseSha = await runGit(['rev-parse', 'HEAD'], sourcePath)
+  if (divergedBase) await runGit(['checkout', '-b', 'feature'], sourcePath)
 
   await writeFile(
     path.join(sourcePath, 'src/app.ts'),
@@ -82,6 +87,13 @@ async function createRemoteRepository(): Promise<{
   await runGit(['add', 'src/app.ts', 'README.md'], sourcePath)
   await runGit(['commit', '-m', 'head'], sourcePath)
   const headSha = await runGit(['rev-parse', 'HEAD'], sourcePath)
+  if (divergedBase) {
+    await runGit(['checkout', 'main'], sourcePath)
+    await writeFile(path.join(sourcePath, 'base-only.ts'), 'export const base = 2;\n')
+    await runGit(['add', 'base-only.ts'], sourcePath)
+    await runGit(['commit', '-m', 'base advances independently'], sourcePath)
+    baseSha = await runGit(['rev-parse', 'HEAD'], sourcePath)
+  }
 
   await runGit(['clone', '--bare', sourcePath, remotePath], rootDirectory)
 
@@ -199,6 +211,24 @@ describe('createTemporaryReviewWorkspaceManager', () => {
       await expect(
         readFile(path.join(workingDirectory, 'src/app.ts'), 'utf8'),
       ).rejects.toThrow()
+    }
+  })
+
+  it('matches the GitHub PR diff when the base branch advances independently', async () => {
+    const repo = await createRemoteRepository(true)
+    const logger = { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() }
+    const manager = createTemporaryReviewWorkspaceManager({ githubToken: 'unused', logger: logger as never })
+    const context = { ...createPullRequestContext(repo), headRef: 'feature' }
+    const prInfo: PRInfoObject = { ...context, description: '', commits: [], changedFilePaths: ['src/app.ts', 'README.md'] }
+    const workspace = await manager.prepareWorkspace(context, prInfo)
+
+    try {
+      expect(workspace.reviewableFiles.map((file) => file.path)).toEqual(['README.md', 'src/app.ts'])
+      expect(workspace.diff).not.toContain('base-only.ts')
+      expect(workspace.diff).toBe(await runGit(['diff', '--unified=5', 'refs/codex-review/base...refs/codex-review/head', '--', 'README.md', 'src/app.ts'], workspace.workingDirectory) + '\n')
+      expect(await readFile(path.join(workspace.workingDirectory, '.git/config'), 'utf8')).not.toContain('unused')
+    } finally {
+      await workspace.cleanup()
     }
   })
 

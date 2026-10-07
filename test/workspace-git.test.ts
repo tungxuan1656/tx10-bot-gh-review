@@ -1,11 +1,11 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
-  buildAuthenticatedRemoteUrl,
+  fetchRevision,
   redactCommandOutput,
   runCommand,
 } from '../src/review/workspace-git.js'
@@ -35,17 +35,35 @@ async function createNodeScript(
 }
 
 describe('workspace git helpers', () => {
-  it('adds GitHub credentials only to http urls', () => {
-    expect(
-      buildAuthenticatedRemoteUrl(
-        'https://github.com/acme/repo.git',
-        'secret-token',
-      ),
-    ).toBe('https://x-access-token:secret-token@github.com/acme/repo.git')
+  it('passes credentials only in the fetch environment, not command args or git config', async () => {
+    const scriptPath = await createNodeScript('git.mjs', [
+      '#!/usr/bin/env node',
+      "import { writeFile } from 'node:fs/promises';",
+      'const args = process.argv.slice(2);',
+      'if (args[0] === "fetch") await writeFile(new URL("capture.json", import.meta.url), JSON.stringify({ args, count: process.env.GIT_CONFIG_COUNT, key: process.env.GIT_CONFIG_KEY_0, value: process.env.GIT_CONFIG_VALUE_0 }));',
+      'if (args[0] === "rev-parse") console.log("expected-sha");',
+    ])
 
-    expect(
-      buildAuthenticatedRemoteUrl('git@github.com:acme/repo.git', 'secret-token'),
-    ).toBe('git@github.com:acme/repo.git')
+    await fetchRevision({
+      cwd: path.dirname(scriptPath),
+      gitBin: scriptPath,
+      remote: 'origin',
+      revision: 'expected-sha',
+      fallbackRef: 'main',
+      localRef: 'refs/codex-review/base',
+      githubToken: 'secret-token',
+      redactions: ['secret-token'],
+      timeoutMs: 5_000,
+    })
+
+    const capture = JSON.parse(await readFile(path.join(path.dirname(scriptPath), 'capture.json'), 'utf8')) as {
+      args: string[]; count: string; key: string; value: string
+    }
+    expect(capture.args.join(' ')).not.toContain('secret-token')
+    expect(capture.args).not.toContain('--depth=1')
+    expect(capture.count).toBe('1')
+    expect(capture.key).toBe('http.https://github.com/.extraheader')
+    expect(capture.value).toBe(`AUTHORIZATION: basic ${Buffer.from('x-access-token:secret-token').toString('base64')}`)
   })
 
   it('redacts raw and url-embedded tokens from command output', () => {

@@ -1,20 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { RunCommandInput } from './types.js'
 
-export function buildAuthenticatedRemoteUrl(
-  cloneUrl: string,
-  githubToken: string,
-): string {
-  if (!/^https?:\/\//.test(cloneUrl)) {
-    return cloneUrl
-  }
-
-  const url = new URL(cloneUrl)
-  url.username = 'x-access-token'
-  url.password = githubToken
-  return url.toString()
-}
-
 export function redactCommandOutput(text: string, redactions: string[]): string {
   let sanitized = text
 
@@ -87,26 +73,31 @@ export async function fetchRevision(input: {
   revision: string
   fallbackRef: string
   localRef: string
+  githubToken: string
   redactions: string[]
   timeoutMs: number
 }): Promise<void> {
+  const authorization = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${input.githubToken}`).toString('base64')}`
   const env = {
     GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+    GIT_CONFIG_VALUE_0: authorization,
   }
+  const redactions = [...input.redactions, authorization, authorization.slice('AUTHORIZATION: basic '.length)]
 
   try {
     await runCommand({
       args: [
         'fetch',
         '--no-tags',
-        '--depth=1',
         input.remote,
         `+${input.revision}:${input.localRef}`,
       ],
       bin: input.gitBin,
       cwd: input.cwd,
       env,
-      redactions: input.redactions,
+      redactions,
       timeoutMs: input.timeoutMs,
     })
   } catch {
@@ -120,7 +111,7 @@ export async function fetchRevision(input: {
       bin: input.gitBin,
       cwd: input.cwd,
       env,
-      redactions: input.redactions,
+      redactions,
       timeoutMs: input.timeoutMs,
     })
   }
@@ -130,7 +121,7 @@ export async function fetchRevision(input: {
       args: ['rev-parse', input.localRef],
       bin: input.gitBin,
       cwd: input.cwd,
-      redactions: input.redactions,
+      redactions,
       timeoutMs: input.timeoutMs,
     })
   ).trim()

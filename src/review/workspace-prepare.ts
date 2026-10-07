@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import type { AppLogger } from '../types/app.js'
@@ -10,7 +10,6 @@ import type {
   WorkspacePrepareOptions,
 } from './types.js'
 import {
-  buildAuthenticatedRemoteUrl,
   fetchRevision,
   runCommand,
 } from './workspace-git.js'
@@ -58,14 +57,8 @@ async function configureRemotesAndFetchRefs(input: {
   runtime: WorkspaceRuntimeContext
   workingDirectory: string
 }): Promise<InitializedWorkspace> {
-  const baseRemoteUrl = buildAuthenticatedRemoteUrl(
-    input.context.baseCloneUrl,
-    input.runtime.githubToken,
-  )
-  const headRemoteUrl = buildAuthenticatedRemoteUrl(
-    input.context.headCloneUrl,
-    input.runtime.githubToken,
-  )
+  const baseRemoteUrl = input.context.baseCloneUrl
+  const headRemoteUrl = input.context.headCloneUrl
 
   await runCommand({
     args: ['remote', 'add', 'origin', baseRemoteUrl],
@@ -94,6 +87,7 @@ async function configureRemotesAndFetchRefs(input: {
     remote: 'origin',
     redactions: input.runtime.commandRedactions,
     revision: input.context.baseSha,
+    githubToken: input.runtime.githubToken,
     timeoutMs: input.runtime.timeoutMs,
   })
 
@@ -105,6 +99,7 @@ async function configureRemotesAndFetchRefs(input: {
     remote: headRemoteName,
     redactions: input.runtime.commandRedactions,
     revision: input.context.headSha,
+    githubToken: input.runtime.githubToken,
     timeoutMs: input.runtime.timeoutMs,
   })
 
@@ -119,6 +114,7 @@ async function configureRemotesAndFetchRefs(input: {
         remote: revision.remote === 'origin' ? 'origin' : headRemoteName,
         redactions: input.runtime.commandRedactions,
         revision: revision.revision,
+        githubToken: input.runtime.githubToken,
         timeoutMs: input.runtime.timeoutMs,
       })
       availableRevisionRefs.push(revision.localRef)
@@ -162,11 +158,12 @@ async function writeWorkspaceMetadata(input: {
     workingDirectory: input.workingDirectory,
   })
 
-  await writeFile(
-    path.join(input.workingDirectory, 'pr-info.yaml'),
-    serializePRInfoToYaml(input.prInfo),
-    'utf8',
-  )
+  const metadataPath = path.join(input.workingDirectory, 'pr-info.yaml')
+  await rm(metadataPath, { recursive: true, force: true })
+  await writeFile(metadataPath, serializePRInfoToYaml(input.prInfo), {
+    encoding: 'utf8',
+    flag: 'wx',
+  })
 }
 
 async function collectReviewableFiles(input: {
@@ -175,7 +172,7 @@ async function collectReviewableFiles(input: {
 }): Promise<ReviewableFile[]> {
   const changedFiles = parseChangedFiles(
     await runCommand({
-      args: ['diff', '--name-status', '-z', baseRefName, headRefName],
+      args: ['diff', '--name-status', '-z', `${baseRefName}...${headRefName}`],
       bin: input.runtime.gitBin,
       cwd: input.workingDirectory,
       redactions: input.runtime.commandRedactions,
@@ -187,7 +184,7 @@ async function collectReviewableFiles(input: {
     await Promise.all(
       changedFiles.map(async (file) => {
         const patch = await runCommand({
-          args: ['diff', '--unified=5', baseRefName, headRefName, '--', file.path],
+          args: ['diff', '--unified=5', `${baseRefName}...${headRefName}`, '--', file.path],
           bin: input.runtime.gitBin,
           cwd: input.workingDirectory,
           redactions: input.runtime.commandRedactions,
@@ -231,8 +228,7 @@ async function buildWorkspaceDiff(input: {
           args: [
             'diff',
             '--unified=5',
-            baseRefName,
-            headRefName,
+            `${baseRefName}...${headRefName}`,
             '--',
             ...input.reviewableFiles.map((file) => file.path),
           ],

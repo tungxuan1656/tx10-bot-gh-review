@@ -1,6 +1,6 @@
 # AI Code Review Bot
 
-AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, routes all review work through a single global FIFO queue, materializes each pull request into a temporary git workspace, instructs Codex to inspect the exact `baseSha..headSha` diff directly via git commands inside that workspace, and publishes one GitHub review per accepted manual review request.
+AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It receives repository or organization pull request webhooks, routes all review work through a single global FIFO queue, materializes each pull request into a temporary git workspace, instructs Codex to inspect the `baseSha...headSha` PR diff (merge-base to head) directly via git commands inside that workspace, and publishes one GitHub review per accepted manual review request.
 
 ## MVP Scope
 
@@ -21,7 +21,7 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 - `approved_before`, `review_request_removed`, and review failures are reaction no-ops.
 - Review starts only on `review_requested` for the configured bot
 - `synchronize` events are ignored and never auto-trigger review
-- Optional approved lock: after bot `APPROVE`, all subsequent PR requests are ignored with reason `approved_before`
+- Optional approved lock: after bot `APPROVE`, repeat requests for that head SHA are ignored with reason `approved_before`; new commits remain reviewable by manual request
 
 ## Project Layout
 
@@ -40,7 +40,7 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 | `CODEX_BIN` | No | Codex CLI binary path. Defaults to `codex`. |
 | `CODEX_MODEL` | No | Codex model passed as `--model`. Defaults to `gpt-5.3-codex`. |
 | `CODEX_TIMEOUT_MS` | No | Max review runtime per Codex invocation in milliseconds. Defaults to `900000` (15 minutes). |
-| `REVIEW_APPROVED_LOCK_ENABLED` | No | When `true`, all subsequent PR requests after a bot `APPROVE` are ignored with reason `approved_before`. Defaults to `true`. |
+| `REVIEW_APPROVED_LOCK_ENABLED` | No | When `true`, repeat requests for the same approved head SHA are ignored with reason `approved_before`. New head SHAs can still be reviewed by manual request. Defaults to `true`. |
 | `REVIEW_DISCUSSION_CACHE_DIR` | No | Directory for cached PR discussion markdown snapshots. Defaults to a temp directory. |
 | `REVIEW_DISCUSSION_CACHE_TTL_MS` | No | TTL for cached discussion snapshots in milliseconds. Defaults to `604800000` (7 days). |
 | `LOG_LEVEL` | No | Pino log level. Defaults to `info`. |
@@ -76,7 +76,9 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 
 ## Deployment
 
-The repo ships with a supported single-process `Dockerfile` that installs Codex CLI and exposes the default app port `43191`, but the recommended first production setup is still a small Linux server running the app with `systemd` behind `nginx`. If you use the container image, you still need to provide Codex authentication inside the container. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR run token before publishing a new result after the bot account is requested for review.
+For macOS, use PM2 with Cloudflare Tunnel as described in the deployment guide. For Linux, use a small server running the app with `systemd` behind `nginx`. Build with `pnpm build`; the runtime entrypoint is `dist/src/http/index.js` (`pnpm start`). Keep `resources/review-skills/` beside `dist/` in the deployed checkout. The service is intentionally stateless; idempotency is enforced by checking for an existing marker on the current PR run token before publishing a new result after the bot account is requested for review.
+
+Codex uses a read-only sandbox and a restricted child environment. GitHub credentials are passed only to Git fetches and are not stored in workspace remotes. This reduces exposure but is not host-level filesystem isolation; run under a dedicated account with limited access to sensitive files.
 
 Codex reviews are allowed to run for up to 15 minutes by default so larger pull requests have enough time to complete. If needed, tune this with `CODEX_TIMEOUT_MS`.
 

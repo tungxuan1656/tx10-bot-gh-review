@@ -1,6 +1,6 @@
 import { toReviewEvent } from './decision.js'
 import {
-  buildPullRequestKey,
+  buildRunKey,
   isInvalidInlineReviewCommentError,
   normalizeOptionalText,
   separateInlineAndOverflowFindings,
@@ -82,7 +82,7 @@ export function applyApprovedLock(input: {
     return
   }
 
-  input.approvedLockedPullRequests.add(buildPullRequestKey(input.context))
+  input.approvedLockedPullRequests.add(buildRunKey(input.context))
   input.runLogger.info(
     {
       event: 'review.approved_locked',

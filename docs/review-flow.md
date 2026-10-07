@@ -14,6 +14,7 @@ Notes:
 
 - A push to PR branch (`synchronize`) must not auto-trigger review.
 - Re-review is started only by a new manual `review_requested` action.
+- With approved lock enabled, only repeat requests for the same approved head SHA are skipped; new head SHAs remain reviewable.
 
 ## 2. Review Mode Selection
 
@@ -57,7 +58,7 @@ Goal:
 Prompt requirements:
 
 - Must instruct model to read `code-review` skill and relevant references before reviewing.
-- Must review diff and file context from prepared workspace refs.
+- Must review diff and file context from prepared workspace refs using `base...head` (merge-base to head), matching GitHub PR diffs.
 - Must focus on concrete correctness, security, and validation issues.
 - Must avoid purely stylistic findings.
 
@@ -118,7 +119,7 @@ Additional notes:
 - When the review publishes `APPROVE`, update the reaction to `hooray`.
 - When the review publishes `REQUEST_CHANGES`, update the reaction to `confused`.
 - When the bot ignores a request without starting a review, update the reaction to `laugh`.
-- If the PR is already locked by a prior bot `APPROVE`, keep the existing reaction unchanged for later requests.
+- If the current head SHA is already locked by a prior bot `APPROVE`, keep the existing reaction unchanged for repeat requests on that SHA.
 - `review_request_removed` and review failures do not change the reaction.
 
 ## 7. Idempotency and Retry Expectations

@@ -100,7 +100,7 @@ cd ~/tx10-bot-gh-review
 set -a
 source .env
 set +a
-node dist/http/index.js
+node dist/src/http/index.js
 ```
 
 In another shell:
@@ -122,7 +122,7 @@ cd ~/tx10-bot-gh-review
 set -a
 source .env
 set +a
-pm2 start dist/http/index.js --name gh-review-bot --interpreter node --update-env
+pm2 start dist/src/http/index.js --name gh-review-bot --interpreter node --update-env
 pm2 save
 pm2 status
 pm2 logs gh-review-bot
@@ -131,8 +131,30 @@ pm2 logs gh-review-bot
 If you later change `.env`, source it again and restart:
 
 ```bash
+set -a
+source .env
+set +a
 pm2 restart gh-review-bot --update-env
 ```
+
+### Updating an Existing PM2 Process
+
+Use the existing process name (for example `gh-bot-review`), not a second `pm2 start`. Check `pm2 show gh-bot-review` for its `exec cwd`; updates must be applied and built in that checkout, which may differ from your development checkout.
+
+After the reviewed changes are present in that runtime checkout:
+
+```bash
+cd /path/to/the/runtime/checkout
+pnpm install --frozen-lockfile
+pnpm validate
+pnpm build
+# Wait for active reviews to finish before restarting: the queue is in memory.
+pm2 restart gh-bot-review
+curl --fail http://127.0.0.1:43191/healthz
+pm2 logs gh-bot-review --lines 50 --nostream
+```
+
+A code-only restart preserves the existing PM2 environment. If environment variables changed, source `.env` and use `--update-env`. Cloudflare Tunnel does not need to be restarted for these code updates. After deployment, manually request one real PR review to verify GitHub access and Codex authentication; `/healthz` alone only proves HTTP availability.
 
 ## 7. Configure PM2 Startup on macOS
 
@@ -190,7 +212,7 @@ Behavior notes:
 - `synchronize` events are ignored and never auto-trigger review.
 - A new manual `review_requested` after a prior successful review runs fast re-review mode.
 - Removing the bot as a reviewer issues a best-effort cancellation request for the current in-flight run.
-- With approved lock enabled, all subsequent PR requests after a bot `APPROVE` are ignored with reason `approved_before`.
+- With approved lock enabled, requests for the same approved head SHA are ignored with reason `approved_before`; a new head SHA can be reviewed after another manual request.
 
 ## Troubleshooting
 
