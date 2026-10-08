@@ -3,7 +3,9 @@ const baseRefName = 'refs/codex-review/base'
 const headRefName = 'refs/codex-review/head'
 const completionRules = [
   'Set reviewStatus to "complete" only after inspecting the entire required diff and necessary context.',
-  'If shell commands fail, output is truncated, or required context is unavailable, report "incomplete" or "blocked" with an incompleteReason.',
+  'Recover failed or truncated inspection attempts before deciding reviewStatus: reread required context in smaller bounded sections, and replace stalled searches with a focused tracked-file search or direct file read.',
+  'Report "incomplete" or "blocked" with an incompleteReason only if the mandatory diff or necessary context remains unavailable after recovery. A recovered attempt or an abandoned optional search does not by itself make the review incomplete.',
+  'Never treat partial output as complete required context. Do not omit necessary inspection to reach a complete status.',
   'For "complete", incompleteReason must be an empty string. An empty findings array is not proof of a completed review.',
 ]
 const safetyRules = [

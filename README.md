@@ -38,7 +38,7 @@ AI Code Review Bot is a machine-user GitHub reviewer powered by Codex CLI. It re
 | `GITHUB_BOT_LOGIN` | Yes | Exact GitHub login of the machine user reviewer |
 | `GITHUB_WEBHOOK_SECRET` | Yes | Shared secret used to verify repository or organization webhooks |
 | `CODEX_BIN` | No | Codex CLI binary path. Defaults to `codex`. |
-| `CODEX_MODEL` | No | Codex model passed as `--model`. Defaults to `gpt-5.3-codex`. |
+| `CODEX_MODEL` | No | Codex model passed as `--model`. When unset, uses the Codex CLI model configuration. |
 | `CODEX_TIMEOUT_MS` | No | Max review runtime per Codex invocation in milliseconds. Defaults to `900000` (15 minutes). |
 | `REVIEW_APPROVED_LOCK_ENABLED` | No | When `true`, repeat requests for the same approved head SHA are ignored with reason `approved_before`. New head SHAs can still be reviewed by manual request. Defaults to `true`. |
 | `REVIEW_DISCUSSION_CACHE_DIR` | No | Directory for cached PR discussion markdown snapshots. Defaults to a temp directory. |

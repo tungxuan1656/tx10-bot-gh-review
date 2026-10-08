@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { execFileSync } from 'node:child_process'
 
 import type { CodexInspection } from './types.js'
 import { shellQuotePath } from './prompt.js'
@@ -20,23 +21,35 @@ const inspectionSchema = z.object({
   paths: z.array(z.string().min(1)).min(1),
 })
 
+let inspectionGitBin: string | undefined
+
+function getInspectionGitBin(): string {
+  // Apple's /usr/bin/git launcher invokes xcrun, which writes caches denied by read-only Codex.
+  inspectionGitBin ??= process.platform === 'darwin'
+    ? execFileSync('xcrun', ['--find', 'git'], { encoding: 'utf8', timeout: 5_000 }).trim()
+    : 'git'
+  return inspectionGitBin
+}
+
 export function buildInspectionCommand(workingDirectory: string, inspection: CodexInspection): {
   command: string
+  bin: string
   args: string[]
 } {
   const scope = inspectionSchema.parse(inspection)
+  const bin = getInspectionGitBin()
   const args = [
     '-C', workingDirectory, '--no-pager', 'diff', '--no-ext-diff', '--no-textconv',
     '--color=never', '--unified=5', scope.range, '--',
     ...scope.paths.map((filePath) => `:(literal)${filePath}`),
   ]
   const command = [
-    'git', '-C', shellQuotePath(workingDirectory), '--no-pager', 'diff',
+    bin === 'git' ? bin : shellQuotePath(bin), '-C', shellQuotePath(workingDirectory), '--no-pager', 'diff',
     '--no-ext-diff', '--no-textconv', '--color=never', '--unified=5',
     shellQuotePath(scope.range), '--',
     ...scope.paths.map((filePath) => shellQuotePath(`:(literal)${filePath}`)),
   ].join(' ')
-  return { command, args }
+  return { command, bin, args }
 }
 
 function matchesInspectionCommand(actual: string, expected: string): boolean {
@@ -88,7 +101,7 @@ export async function getCompletionFailure(input: {
   let expectedOutput: string
   try {
     expectedOutput = await runCommand({
-      bin: 'git', args: required.args, cwd: input.workingDirectory, timeoutMs: input.timeoutMs,
+      bin: required.bin, args: required.args, cwd: input.workingDirectory, timeoutMs: input.timeoutMs,
     })
   } catch {
     return 'Independent Git diff verification failed.'

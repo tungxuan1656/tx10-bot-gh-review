@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { runCommand } from '../src/review/workspace-git.js'
+import { buildInspectionCommand } from '../src/review/codex-completion.js'
 import {
   cleanupCodexTestArtifacts,
   createRunner,
@@ -14,7 +15,7 @@ const inspection = {
   range: 'refs/codex-review/base...refs/codex-review/head',
   paths: ['src/app.ts'],
 }
-const command = "git -C '/tmp/pr-workspace' --no-pager diff --no-ext-diff --no-textconv --color=never --unified=5 'refs/codex-review/base...refs/codex-review/head' -- ':(literal)src/app.ts'"
+const command = buildInspectionCommand('/tmp/pr-workspace', inspection).command
 const patch = 'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-before\n+after\n'
 const completeResult = {
   reviewStatus: 'complete',
@@ -52,6 +53,7 @@ describe('Codex review completion gate', () => {
     const { outcome } = await review(completeResult)
     expect(outcome).toMatchObject({ ok: true, result: { decision: 'approve', findings: [] } })
     expect(runCommand).toHaveBeenCalledWith(expect.objectContaining({
+      bin: buildInspectionCommand('/tmp/pr-workspace', inspection).bin,
       args: ['-C', '/tmp/pr-workspace', '--no-pager', 'diff', '--no-ext-diff', '--no-textconv', '--color=never', '--unified=5', inspection.range, '--', ':(literal)src/app.ts'],
     }))
   })

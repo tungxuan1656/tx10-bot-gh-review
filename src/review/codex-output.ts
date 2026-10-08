@@ -68,8 +68,12 @@ export function stripJsonFences(text: string): string {
   return fenced?.[1]?.trim() ?? trimmed
 }
 
-export function detectFailureHint(stderr: string): string | undefined {
-  const lower = stderr.toLowerCase()
+export function detectFailureHint(output: string): string | undefined {
+  const lower = output.toLowerCase()
+
+  if (lower.includes('model') && lower.includes('not supported')) {
+    return 'unsupported_model'
+  }
 
   if (
     lower.includes('context length') ||

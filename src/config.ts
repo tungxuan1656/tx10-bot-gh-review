@@ -32,7 +32,7 @@ const envSchema = z.object({
   GITHUB_BOT_LOGIN: z.string().min(1, 'GITHUB_BOT_LOGIN is required'),
   GITHUB_WEBHOOK_SECRET: z.string().min(1, 'GITHUB_WEBHOOK_SECRET is required'),
   CODEX_BIN: z.string().min(1).default('codex'),
-  CODEX_MODEL: z.string().min(1).default('gpt-5.3-codex'),
+  CODEX_MODEL: z.string().min(1).optional(),
   CODEX_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   REVIEW_APPROVED_LOCK_ENABLED: boolStringSchema.default('true'),
   REVIEW_DISCUSSION_CACHE_DIR: z

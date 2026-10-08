@@ -80,15 +80,23 @@ describe('createCodexRunner review', () => {
     }>(capturePath)
 
     expect(capture.args).toContain('exec')
+    expect(capture.args).not.toContain('--model')
     expect(capture.args).toContain('--cd')
     expect(capture.args).toContain('/tmp/pr-workspace')
     expect(capture.args).toContain('--sandbox')
     expect(capture.args).toContain('read-only')
     expect(capture.args).toContain('shell_environment_policy.inherit="core"')
+    expect(capture.args).toContain('tool_output_token_limit=64000')
     expect(capture.args).toContain('--output-schema')
     expect(capture.args).toContain('--output-last-message')
     expect(capture.stdin).toContain('Review this diff')
     expect(capture.stdin).toContain('Mandatory diff inspection:')
+    expect(capture.stdin).toContain('max_output_tokens to at least 64000 on the shell tool')
+    expect(capture.stdin).toContain('// @exec: {"max_output_tokens": 64000}')
+    expect(capture.stdin).toContain('Tool output instructions for every inspection call')
+    expect(capture.stdin).toContain('Read one context file or bounded section per call')
+    expect(capture.stdin).toContain('grep -n -I -E <pattern> refs/codex-review/head -- <paths>')
+    expect(capture.stdin).toContain('For all Git inspection commands')
     expect(capture.args).toContain('--json')
     expect(capture.outputSchema?.required).toContain('reviewStatus')
     expect(capture.outputSchema?.required).toContain('incompleteReason')
@@ -230,6 +238,30 @@ describe('createCodexRunner review', () => {
         failureHint: 'possible_rate_limited',
         reason: 'non_zero_exit',
       }),
+      'Codex review failed',
+    )
+  })
+
+  it('reports unsupported model errors emitted in JSON stdout', async () => {
+    const binPath = await createFailingFakeCodexBinary({
+      stderr: '',
+      stdout: JSON.stringify({
+        type: 'turn.failed',
+        error: { message: "The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account." },
+      }),
+    })
+    const { logger, runner } = createRunner({ bin: binPath, timeoutMs: 5_000 })
+
+    expect(await runner.review({
+      prompt: 'Review this diff',
+      inspection: testInspectionScope,
+      workingDirectory: '/tmp/pr-workspace',
+    })).toEqual({
+      ok: false,
+      reason: 'Codex rejected the selected model. Set CODEX_MODEL to a supported model or unset it to use the Codex CLI configuration.',
+    })
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ failureHint: 'unsupported_model' }),
       'Codex review failed',
     )
   })

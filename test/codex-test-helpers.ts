@@ -4,6 +4,7 @@ import path from 'node:path'
 import { vi } from 'vitest'
 
 import { createCodexRunner } from '../src/review/codex.js'
+import { buildInspectionCommand } from '../src/review/codex-completion.js'
 
 const createdDirectories: string[] = []
 
@@ -17,7 +18,7 @@ const defaultCodexEvents = JSON.stringify({
   type: 'item.completed',
   item: {
     id: 'item_0', type: 'command_execution', status: 'completed', exit_code: 0,
-    command: "git -C '/tmp/pr-workspace' --no-pager diff --no-ext-diff --no-textconv --color=never --unified=5 'refs/codex-review/base...refs/codex-review/head' -- ':(literal)src/app.ts'",
+    command: buildInspectionCommand('/tmp/pr-workspace', testInspectionScope).command,
     aggregated_output: testDiffOutput,
   },
 }) + '\n' + completedTurn
@@ -135,6 +136,7 @@ export async function createSlowFakeCodexBinary(): Promise<string> {
 
 export async function createFailingFakeCodexBinary(input: {
   stderr: string
+  stdout?: string
 }): Promise<string> {
   const tempDirectory = await mkdtemp(
     path.join(os.tmpdir(), 'codex-runner-fail-test-'),
@@ -147,6 +149,7 @@ export async function createFailingFakeCodexBinary(input: {
     [
       '#!/usr/bin/env node',
       `console.error(${JSON.stringify(input.stderr)})`,
+      `process.stdout.write(${JSON.stringify(input.stdout ?? '')})`,
       'process.exit(2)',
     ].join('\n'),
     'utf8',

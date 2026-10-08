@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import type { AppLogger } from '../types/app.js'
 import type { CodexInspection } from './types.js'
 import { buildInspectionCommand, getCompletionFailure } from './codex-completion.js'
+import { shellQuotePath } from './prompt.js'
 import {
   codexOutputJsonSchema,
   detectFailureHint,
@@ -55,9 +56,24 @@ export async function runCodexPhase(input: {
     const inspection = input.validateJson && input.inspection
       ? buildInspectionCommand(input.workingDirectory, input.inspection)
       : null
-    const prompt = inspection
-      ? `${input.prompt}\n\nMandatory diff inspection:\nRun this exact command as a standalone shell tool call, without pipes, redirects, prefixes, or modifications:\n${inspection.command}\nRead its entire output. Request enough output tokens; if truncated, report incomplete rather than approve.`
-      : input.prompt
+    const prompt = [
+      input.prompt,
+      '',
+      'Tool output instructions for every inspection call, including skills, discussion, and surrounding file context:',
+      'Set max_output_tokens to at least 64000 on the shell tool. If using functions.exec, also set its outer output budget with the first-line directive // @exec: {"max_output_tokens": 64000} and print the shell result\'s output string directly. Both layers can truncate independently.',
+      'Read one context file or bounded section per call. If batching, the outer budget must cover the combined output of all calls. Reread every missing required section after truncation; increasing only a nested shell budget is insufficient.',
+      ...(inspection ? [
+        '',
+        `For all Git inspection commands, including the earlier examples, use this executable: ${shellQuotePath(inspection.bin)}.`,
+        `For repository searches, prefer ${shellQuotePath(inspection.bin)} grep -n -I -E <pattern> refs/codex-review/head -- <paths>. Exit code 1 means no matches, not a tool failure.`,
+        'If a search stalls, cancel it and recover with a focused tracked-file search or direct read of the required files. Do not wait repeatedly on an auxiliary search.',
+        '',
+        'Mandatory diff inspection:',
+        'Run this exact command as a standalone shell tool call, without pipes, redirects, prefixes, or modifications:',
+        inspection.command,
+        'Read its entire output. If truncated, repeat the exact command with larger budgets; report incomplete rather than approve if the full output remains unavailable.',
+      ] : []),
+    ].join('\n')
 
     const args = [
       'exec',
@@ -71,6 +87,8 @@ export async function runCodexPhase(input: {
       // "core" keeps PATH/HOME/TMPDIR available to model shell commands so git works,
       // while Codex still strips KEY/TOKEN/SECRET variables from those commands.
       'shell_environment_policy.inherit="core"',
+      '--config',
+      'tool_output_token_limit=64000',
       '--skip-git-repo-check',
       ...(input.validateJson ? ['--output-schema', outputSchemaPath] : []),
       '--output-last-message',
@@ -221,7 +239,7 @@ export async function runCodexPhase(input: {
     }
 
     if (exitCode !== 0) {
-      const failureHint = detectFailureHint(stderr)
+      const failureHint = detectFailureHint(`${stderr}\n${stdout}`)
 
       input.logger.warn(
         {
@@ -243,7 +261,12 @@ export async function runCodexPhase(input: {
         },
         'Codex review failed',
       )
-      return { ok: false, reason: 'Codex returned a non-zero exit code.' }
+      return {
+        ok: false,
+        reason: failureHint === 'unsupported_model'
+          ? 'Codex rejected the selected model. Set CODEX_MODEL to a supported model or unset it to use the Codex CLI configuration.'
+          : 'Codex returned a non-zero exit code.',
+      }
     }
 
     const completionFailure = await getCompletionFailure({

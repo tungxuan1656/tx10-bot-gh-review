@@ -14,6 +14,12 @@ const baseEnv = {
 } satisfies NodeJS.ProcessEnv
 
 describe('loadConfig', () => {
+  it('uses the Codex CLI model configuration unless explicitly overridden', () => {
+    expect(loadConfig(baseEnv).codexModel).toBeUndefined()
+    expect(loadConfig({ ...baseEnv, CODEX_MODEL: 'configured-model' }).codexModel)
+      .toBe('configured-model')
+  })
+
   it('loads the required GitHub machine-user settings', () => {
     const config = loadConfig(baseEnv)
 

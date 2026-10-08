@@ -59,7 +59,8 @@ describe('createCodexRunner reviewTwoPhase', () => {
 
     const capture = await readJsonFile<Array<{ stdin: string }>>(capturePath)
     expect(capture).toHaveLength(2)
-    expect(capture[0]?.stdin).toBe('phase1')
+    expect(capture[0]?.stdin).toMatch(/^phase1\n/)
+    expect(capture[0]?.stdin).toContain('Tool output instructions for every inspection call')
     expect(capture[1]?.stdin).toContain('phase2:phase-one-summary')
     expect(capture[1]?.stdin).toContain('Mandatory diff inspection:')
   })

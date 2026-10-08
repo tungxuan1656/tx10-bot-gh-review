@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { cleanupCodexTestArtifacts, createRunner } from './codex-test-helpers.js'
+import { buildInspectionCommand } from '../src/review/codex-completion.js'
 
 const execFileAsync = promisify(execFile)
 const directories: string[] = []
@@ -69,6 +70,15 @@ afterEach(async () => {
 })
 
 describe('Codex diff inspection with real Git', () => {
+  it.runIf(process.platform === 'darwin')('uses the resolved Git executable instead of the macOS launcher', () => {
+    const required = buildInspectionCommand('/tmp/pr-workspace', {
+      range: 'refs/codex-review/base...refs/codex-review/head', paths: ['src/app.ts'],
+    })
+    expect(path.isAbsolute(required.bin)).toBe(true)
+    expect(required.bin).not.toBe('/usr/bin/git')
+    expect(required.command).toContain(`'${required.bin}' -C`)
+  })
+
   it.each([
     'refs/codex-review/base...refs/codex-review/head',
     'refs/codex-review/previous..refs/codex-review/head',

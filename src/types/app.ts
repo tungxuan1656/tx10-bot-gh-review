@@ -18,7 +18,7 @@ export type AppConfig = {
   githubBotLogin: string
   githubWebhookSecret: string
   codexBin: string
-  codexModel: string
+  codexModel: string | undefined
   codexTimeoutMs: number
   reviewApprovedLockEnabled: boolean
   reviewDiscussionCacheDir: string

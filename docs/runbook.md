@@ -32,7 +32,7 @@ Expected response:
 ### Codex failure comment appears on the PR
 
 - Check that `CODEX_BIN` resolves to a working Codex CLI binary
-- Check that `CODEX_MODEL` is set to a supported model in your environment
+- If `CODEX_MODEL` is set, check that it is supported by the CLI account. When unset, the service uses the Codex CLI model configuration (normally `~/.codex/config.toml`).
 - Run `codex --help` on the host to confirm availability
 - Inspect service logs for timeout, non-zero exit warnings, and `codex.completion_gate_failed`
 - Check `codex --version` and `codex exec --help`: this runner requires `--json` command-execution and turn-completion events
@@ -40,8 +40,11 @@ Expected response:
 - `Independent Git diff verification failed.` is logged as `codex.completion_gate_failed`; check local Git availability and that the temporary repository and inspection refs are usable
 - `Codex diff inspection output was truncated` includes expected/received byte counts in both the gate log reason and the neutral comment. Codex 0.159.3 caps the tested shell capture at approximately 1 MiB; retrying an unchanged diff above that cap will not help. Reduce or split the reviewable diff; per-path/per-chunk evidence support is future work.
 - A complete JSONL capture does not prove the model saw the full tool output; the model-visible output has separate truncation limits
+- On macOS, mandatory inspection and independent verification use the Git executable resolved by `xcrun --find git`, avoiding `/usr/bin/git` launcher cache writes under the read-only sandbox. The runner sets `tool_output_token_limit=64000` for model history, and the prompt requests at least 64000 output tokens at both the shell and outer `functions.exec` layers. All three layers can truncate independently.
+- Output budgets apply to every context read, including skills and discussion. Read one file or bounded section at a time; batch budgets must cover the combined output. Recover truncation by rereading missing required sections. Replace stalled auxiliary searches with focused `git grep` searches on tracked head files or direct reads. Recovered attempts do not make a review incomplete; unavailable required context still does.
 - Do not disable the gate to recover approvals. Fix runtime/tool access and make a fresh manual request for transient failures; see the [Review Contract](review-contract.md) for capture-limit failures.
 - For non-zero exits, inspect `failureHint`, `stderrTailPreview`, and `stdoutTailPreview` on `codex.failed`
+- `failureHint=unsupported_model` means Codex rejected the selected model. Set `CODEX_MODEL` to a supported model or unset it and check the CLI configuration, then rebuild and restart the service before manually requesting review again. Errors may appear in JSON stdout with empty stderr; both streams are checked.
 - Confirm `resources/review-skills/` exists in the deployed service and can be copied into the temp workspace
 
 ### No review was published
